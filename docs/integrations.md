@@ -20,7 +20,7 @@ This guide calls `h + 6` the **QDAY block**.
 | Sia addresses | No | Parse and emit 64-character `qday1p` Bech32m addresses |
 | Sia wallet keys | No | Derive both QDAY keys and sign every input with both |
 | Sia contracts and siafunds | No | QDAY consensus rejects them |
-| Sia Stratum or pool endpoint | No | QDAY 0.5.0 does not ship a Stratum server |
+| Sia Stratum or pool endpoint | No | QDAY 0.6.0 does not ship a Stratum server |
 | Sia explorer assumptions | No | Track the QDAY block, changing values, shields and decay |
 | Sia JSON APIs | No | The shipped API is local and controls one wallet |
 | Supply RPC | No | Read QDAY issuance and burns from `GET /api/supply` |
@@ -62,7 +62,7 @@ coinbase transaction is not valid on QDAY. The controller must:
    QDAY chain manager.
 
 The reference candidate builder is `coreutils/qday.Candidate`; the reference
-CPU nonce search is `coreutils/qday.Mine`. QDAY 0.5.0 has no
+CPU nonce search is `coreutils/qday.Mine`. QDAY 0.6.0 has no
 `getblocktemplate` or Stratum endpoint, so a pool must provide its own job and
 share service. Existing ASIC or GPU controllers can reuse the raw BLAKE2b
 search only when they accept an externally supplied 80-byte header and target.

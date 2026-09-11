@@ -19,7 +19,7 @@ import zipfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 GO = str(ROOT / ".tools/go/bin/go") if (ROOT / ".tools/go/bin/go").exists() else "go"
-VERSION = "0.5.0"
+VERSION = "0.6.0"
 MAINNET_MANIFEST_SHA256 = "14d4a47a850f5ba9d81129142d8718c323d826b5f9459516374c4f0f92eaa65b"
 TARGETS = {
     "linux-amd64": ("linux", "amd64"),
@@ -126,8 +126,7 @@ For a public seed node, read deploy/qday.service and deploy/qday.env.example.
 Open TCP 19771 to the Internet; keep the local API private.
 
 Windows and macOS executables are currently unsigned. Verify the release hash
-before opening them. Native CI verifies startup and a live mainnet handshake
-on every supported operating system and architecture.
+before opening them.
 """
     (out / "START-HERE.txt").write_text(instructions, encoding="utf-8")
     if not windows:
@@ -182,8 +181,7 @@ Open {start} again to reopen an already running wallet.
 Linux: if your file manager does not launch executables, run ./{start} from this folder.
 
 Windows and macOS executables are currently unsigned. Verify the release hash
-before opening them. Native CI verifies startup and a live mainnet handshake
-on every supported operating system and architecture.
+before opening them.
 """
     (out/"START-HERE.txt").write_text(instructions, encoding="utf-8")
     executable = out/start

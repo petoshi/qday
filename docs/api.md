@@ -1,6 +1,6 @@
 # Local wallet API
 
-QDAY 0.5.0 exposes an HTTP API for the bundled desktop wallet. It listens on
+QDAY 0.6.0 exposes an HTTP API for the bundled desktop wallet. It listens on
 the local computer only, normally at `http://127.0.0.1:19770`. The API controls
 one wallet and its node. It does not provide the block-history and multi-wallet
 operations required by exchanges, explorers or mining pools.
