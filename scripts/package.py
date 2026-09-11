@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Build self-contained Linux, Windows and macOS wallets.
+"""Build self-contained QDAY wallets and standalone nodes.
 
 Requires Go and a native C compiler; Windows cross-builds require MinGW.
 
 The downloaded wallet needs none of those tools: open QDAY-Wallet and its
-bundled node serves the graphical interface in the system browser.
+bundled node serves the graphical interface in the system browser. The node
+archive contains the same native node without the graphical launcher.
 """
 import argparse
 import hashlib
@@ -56,6 +57,85 @@ def build(target, out):
                     "-o", str(out/("QDAY-Wallet"+suffix)), "./node/cmd/qday-wallet"], cwd=ROOT, env=env, check=True)
 
 
+def archive_directory(out, name, windows):
+    if windows:
+        archive = out.parent / (name + ".zip")
+        with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as bundle:
+            for file in sorted(out.rglob("*")):
+                if file.is_file():
+                    bundle.write(file, file.relative_to(out.parent))
+    else:
+        archive = out.parent / (name + ".tar.gz")
+        with tarfile.open(archive, "w:gz") as bundle:
+            bundle.add(out, arcname=name)
+    digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+    with pathlib.Path(str(archive) + ".sha256").open("w", newline="\n") as checksum:
+        checksum.write(digest + "  " + archive.name + "\n")
+    print(archive.relative_to(ROOT), flush=True)
+    return archive, digest
+
+
+def copy_public_files(out):
+    shutil.copytree(ROOT / "docs", out / "docs")
+    shutil.copytree(ROOT / "licenses", out / "licenses")
+    shutil.copytree(ROOT / "deploy", out / "deploy")
+    for source in ("node", "core", "coreutils"):
+        shutil.copy2(ROOT / source / "LICENSE", out / "licenses" / (source + "-LICENSE"))
+    shutil.copy2(ROOT / "third_party/upnp/LICENSE", out / "licenses/upnp-LICENSE")
+    shutil.copy2(ROOT / "third_party/upnp/QDAY-PATCHES.md", out / "licenses/upnp-QDAY-PATCHES.md")
+
+
+def package_node(target, args, wallet_out):
+    network = "mainnet"
+    windows = target.startswith("windows")
+    name = f"QDAY-Node-{VERSION}-{network}-{target}"
+    out = args.output / name
+    if out.exists():
+        shutil.rmtree(out)
+    out.mkdir(parents=True)
+    suffix = ".exe" if windows else ""
+    executable = "qday" + suffix
+    shutil.copy2(wallet_out / "resources" / ("qday-node" + suffix), out / executable)
+    shutil.copy2(args.manifest, out / "qday-mainnet.json")
+    copy_public_files(out)
+    notice = (f"MAINNET GENESIS: {args.genesis_id}\n"
+              f"GENESIS TIME: {args.genesis_timestamp}\n"
+              f"MANIFEST SHA-256: {args.manifest_sha256}\n"
+              "Verify the published genesis hash and release checksum.")
+    if args.genesis_message:
+        notice += f"\nGENESIS INSCRIPTION: {args.genesis_message}"
+    run = f"{executable} --network qday-mainnet.json" if windows else f"./{executable} --network ./qday-mainnet.json"
+    instructions = f"""QDAY NODE {VERSION} — {target}
+{notice}
+
+1. Extract the ENTIRE archive into a folder.
+2. Start an ordinary mainnet node:
+
+   {run}
+
+The node listens for QDAY peers on TCP 19771 and exposes its authenticated
+wallet API only on 127.0.0.1:19770. It discovers peers through the three
+pqday.com bootstrap nodes. Use --help to see data-directory, peer, UPnP and
+seed-node options.
+
+No Go, Python, Node.js, Docker or separately installed database is required.
+The qday-mainnet.json file must remain available at the path passed to --network.
+This package contains no wallet key, seed phrase, API token or blockchain state.
+
+For a public seed node, read deploy/qday.service and deploy/qday.env.example.
+Open TCP 19771 to the Internet; keep the local API private.
+
+Windows and macOS executables are currently unsigned. Verify the release hash
+before opening them. Native CI verifies startup and a live mainnet handshake
+on every supported operating system and architecture.
+"""
+    (out / "START-HERE.txt").write_text(instructions, encoding="utf-8")
+    if not windows:
+        (out / executable).chmod(0o755)
+    archive, digest = archive_directory(out, name, windows)
+    return archive, digest
+
+
 def package(target, args):
     if target not in TARGETS:
         raise ValueError("Supported targets: " + ", ".join(TARGETS))
@@ -71,13 +151,7 @@ def package(target, args):
     (out/"resources/distribution.json").write_text(json.dumps(config, indent=2)+"\n")
     if args.manifest:
         shutil.copy2(args.manifest, out/"resources/qday-mainnet.json")
-    shutil.copytree(ROOT/"docs", out/"docs")
-    shutil.copytree(ROOT/"licenses", out/"licenses")
-    shutil.copytree(ROOT/"deploy", out/"deploy")
-    for source in ("node", "core", "coreutils"):
-        shutil.copy2(ROOT/source/"LICENSE", out/"licenses"/(source+"-LICENSE"))
-    shutil.copy2(ROOT/"third_party/upnp/LICENSE", out/"licenses/upnp-LICENSE")
-    shutil.copy2(ROOT/"third_party/upnp/QDAY-PATCHES.md", out/"licenses/upnp-QDAY-PATCHES.md")
+    copy_public_files(out)
     start = "QDAY-Wallet.exe" if target.startswith("windows") else "QDAY-Wallet"
     notice = (f"MAINNET GENESIS: {args.genesis_id}\n"
               f"GENESIS TIME: {args.genesis_timestamp}\n"
@@ -116,22 +190,13 @@ on every supported operating system and architecture.
     if not target.startswith("windows"):
         executable.chmod(0o755)
         (out/"resources/qday-node").chmod(0o755)
-    if target.startswith("windows"):
-        archive = out.parent/(name+".zip")
-        with zipfile.ZipFile(archive,"w",compression=zipfile.ZIP_DEFLATED,compresslevel=9) as z:
-            for file in sorted(out.rglob("*")):
-                if file.is_file(): z.write(file, file.relative_to(out.parent))
-    else:
-        archive = out.parent/(name+".tar.gz")
-        with tarfile.open(archive,"w:gz") as tf: tf.add(out,arcname=name)
-    sha = hashlib.sha256(archive.read_bytes()).hexdigest()
-    with pathlib.Path(str(archive)+".sha256").open("w", newline="\n") as checksum:
-        checksum.write(sha+"  "+archive.name+"\n")
-    print(archive.relative_to(ROOT), flush=True)
+    archive, sha = archive_directory(out, name, target.startswith("windows"))
+    node_archive, node_sha = package_node(target, args, out)
     return {"target":target,"network":network,"genesis":args.genesis_id,
             "genesisTimestamp":args.genesis_timestamp,"manifestSHA256":args.manifest_sha256,
             "genesisMessage":args.genesis_message,"archive":str(archive.relative_to(ROOT)),
-            "sha256":sha,"signed":False}
+            "sha256":sha,"nodeArchive":str(node_archive.relative_to(ROOT)),
+            "nodeSHA256":node_sha,"signed":False}
 
 
 def main():

@@ -199,6 +199,26 @@ unless the operating system overrides its standard config directory.
 
 ---
 
+## 🖥️ Run the Node Without the Wallet Window
+
+Every release also includes a smaller `QDAY-Node` archive for each supported
+platform. It contains the same node binary bundled with the graphical wallet,
+the fixed mainnet manifest, deployment files and public protocol docs.
+
+```bash
+tar -xzf QDAY-Node-0.5.0-mainnet-linux-amd64.tar.gz
+cd QDAY-Node-0.5.0-mainnet-linux-amd64
+./qday --network ./qday-mainnet.json
+```
+
+The ordinary node listens on TCP `19771`, exposes its authenticated API only
+on `127.0.0.1:19770` and discovers the network through the three bootstrap
+servers. Run `./qday --help` for data-directory, manual-peer, UPnP and seed
+node options. Operators building pools, explorers or exchange infrastructure
+should start with [`docs/integrations.md`](docs/integrations.md).
+
+---
+
 ## ⛏️ Mining Without the Ceremony
 
 The bundled CPU miner is there so a new wallet can participate immediately.
@@ -340,7 +360,8 @@ make desktop-test
 Supported targets are `linux-amd64`, `linux-arm64`, `windows-amd64`,
 `macos-amd64` and `macos-arm64`. The release archives contain native
 executables, the fixed mainnet manifest, the public docs and dependency
-licenses. They never contain a wallet key, seed phrase or API token.
+licenses. Each target gets a graphical wallet archive and a standalone node
+archive. They never contain a wallet key, seed phrase or API token.
 
 GitHub Actions builds each target on matching x86-64 or ARM64 Linux, Windows
 and macOS hardware. CI validates the archive, starts a keyless node, completes
