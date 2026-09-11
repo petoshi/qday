@@ -704,49 +704,207 @@ h3 {
 
 .premine {
   display: grid;
-  grid-template-columns: 0.9fr 1.1fr;
+  grid-template-columns: minmax(0, 0.88fr) minmax(580px, 1.12fr);
   gap: 8vw;
   padding: clamp(5rem, 10vw, 9rem) 4vw;
   border-top: 1px solid var(--line);
   background:
-    linear-gradient(135deg, rgba(231,193,120,0.07), transparent 42%),
+    linear-gradient(135deg, rgba(231,193,120,0.09), transparent 38%),
+    radial-gradient(circle at 82% 44%, rgba(255,128,95,0.08), transparent 32%),
     var(--ink);
+}
+
+.premine h2 {
+  font-size: clamp(4rem, 5.8vw, 6.8rem);
+}
+
+.premine-copy > p:last-child {
+  max-width: 600px;
+  margin: 2rem 0 0;
+  color: var(--muted);
+  font-size: 1.03rem;
+  line-height: 1.8;
 }
 
 .premine-data {
   align-self: end;
   min-width: 0;
+  border: 1px solid var(--line);
+  background: rgba(255,255,255,0.018);
 }
 
-.premine-data strong {
+.premine-balance {
+  position: relative;
+  overflow: hidden;
+  padding: clamp(1.7rem, 3vw, 3rem);
+  border-bottom: 1px solid var(--line);
+  background: linear-gradient(110deg, rgba(231,193,120,0.1), transparent 65%);
+}
+
+.premine-balance::after {
+  content: "☠";
+  position: absolute;
+  right: 1rem;
+  bottom: -4rem;
+  color: rgba(246,238,226,0.035);
+  font-family: serif;
+  font-size: 12rem;
+  line-height: 1;
+}
+
+.premine-balance > span,
+.premine-burned span,
+.premine-address > span {
   display: block;
+  color: var(--dim);
+  font-size: 0.64rem;
+  font-weight: 800;
+  letter-spacing: 0.18em;
+}
+
+.premine-balance strong {
+  position: relative;
+  z-index: 1;
+  display: block;
+  margin-top: 0.5rem;
   color: var(--gold);
   font-family: var(--display);
-  font-size: clamp(4rem, 7vw, 7.5rem);
+  font-size: clamp(4.2rem, 7vw, 7.6rem);
   line-height: 0.9;
 }
 
-.premine-data > span {
+.premine-balance > b {
+  position: relative;
+  z-index: 1;
   display: block;
-  margin: 1rem 0 2rem;
+  margin-top: 0.85rem;
   color: var(--muted);
-  font-size: 0.7rem;
+  font-size: 0.66rem;
   font-weight: 800;
-  letter-spacing: 0.14em;
+  letter-spacing: 0.16em;
 }
 
-.premine-data code,
+.premine-burned {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 1.5rem;
+  padding: 1.35rem clamp(1.7rem, 3vw, 3rem);
+  border-bottom: 1px solid var(--line);
+}
+
+.premine-burned strong {
+  display: block;
+  margin-top: 0.2rem;
+  color: var(--orange);
+  font-family: var(--display);
+  font-size: 2rem;
+  line-height: 1;
+}
+
+.premine-burned a {
+  flex: 0 0 auto;
+  color: var(--gold);
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.13em;
+}
+
+.premine-burned a:hover,
+.premine-address a:hover code {
+  color: var(--bone);
+}
+
+.premine-milestones {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.premine-milestones li {
+  min-width: 0;
+  padding: 1.4rem 1.2rem;
+  border-right: 1px solid var(--line);
+}
+
+.premine-milestones li:last-child {
+  border-right: 0;
+}
+
+.premine-milestones li > span {
+  color: var(--dim);
+  font-size: 0.58rem;
+  font-weight: 800;
+  letter-spacing: 0.15em;
+}
+
+.premine-milestones li.complete > span,
+.premine-milestones li.complete em {
+  color: var(--orange);
+}
+
+.premine-milestones li.next {
+  background: rgba(231,193,120,0.07);
+}
+
+.premine-milestones li.next > span,
+.premine-milestones li.next em {
+  color: var(--gold);
+}
+
+.premine-milestones div {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  margin-top: 0.7rem;
+}
+
+.premine-milestones b {
+  font-family: var(--display);
+  font-size: 1.4rem;
+  letter-spacing: 0.04em;
+}
+
+.premine-milestones strong {
+  color: var(--muted);
+  font-size: 0.65rem;
+}
+
+.premine-milestones em {
+  display: block;
+  margin-top: 0.35rem;
+  font-size: 0.62rem;
+  font-style: normal;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.premine-address {
+  padding: 1.25rem clamp(1.7rem, 3vw, 3rem) 1.5rem;
+  border-top: 1px solid var(--line);
+}
+
+.premine-address a {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  margin-top: 0.55rem;
+}
+
+.premine-address a > b {
+  flex: 0 0 auto;
+  color: var(--gold);
+}
+
+.premine-address code,
 .genesis code {
   display: block;
   max-width: 100%;
   overflow-wrap: anywhere;
   color: #b6aeb7;
   font-size: 0.7rem;
-}
-
-.premine-data p {
-  max-width: 650px;
-  color: var(--muted);
 }
 
 .genesis {
@@ -1219,6 +1377,11 @@ footer div a:hover {
     border-bottom: 1px solid var(--line);
   }
 
+  .premine {
+    grid-template-columns: 1fr;
+    gap: 3rem;
+  }
+
   .daemon-grid {
     grid-template-columns: repeat(3, 1fr);
   }
@@ -1412,8 +1575,25 @@ footer div a:hover {
     gap: 3rem;
   }
 
-  .premine-data strong {
+  .premine-balance strong {
     font-size: 4rem;
+  }
+
+  .premine-burned {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .premine-milestones {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .premine-milestones li:nth-child(2) {
+    border-right: 0;
+  }
+
+  .premine-milestones li:nth-child(-n+2) {
+    border-bottom: 1px solid var(--line);
   }
 
   .genesis {

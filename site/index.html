@@ -18,7 +18,7 @@
   <link rel="canonical" href="https://pqday.com/">
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
   <link rel="preload" href="assets/hero.webp" as="image" type="image/webp">
-  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="styles.css?v=2">
   <script src="app.js" defer></script>
 </head>
 <body>
@@ -168,16 +168,32 @@
       </dl>
     </section>
 
-    <section class="premine">
-      <div>
-        <p class="eyebrow">I SAID “NO. OR MAYBE.”</p>
-        <h2>YES, THERE IS<br>A PREMINE.</h2>
+    <section class="premine" id="premine">
+      <div class="premine-copy">
+        <p class="eyebrow">I FOUND A USE FOR THE PREMINE.</p>
+        <h2>MAKE THE NUMBER BIGGER.<br>MAKE MY PREMINE SMALLER.</h2>
+        <p>Every time stable network hashrate earns a new SI prefix, I burn 10% of whatever premine is left. The chain gets stronger. My allocation gets smaller.</p>
       </div>
       <div class="premine-data">
-        <strong>500,000 QDAY</strong>
-        <span>5.88% OF MAXIMUM ORIGINAL-DENOMINATION ISSUANCE</span>
-        <code>qday1pdsa0ezy7y3nnmnxm0tx74q2kd9acvzs8329wfd2n6ycqnmygtt9stpwtsr</code>
-        <p>No presale. No VC allocation hiding behind a prettier word. The address is in genesis and right here.</p>
+        <div class="premine-balance">
+          <span>PREMINE LEFT</span>
+          <strong>364,500</strong>
+          <b>QDAY // STARTED AT 500,000</b>
+        </div>
+        <div class="premine-burned">
+          <div><span>DEAD SO FAR</span><strong>135,500 QDAY</strong></div>
+          <a href="https://explorer.pqday.com/transaction/9fc94d87d7d35185ba04919804b56a97368043c570bcd3d85d4462e4aa704151" target="_blank" rel="noopener noreferrer">VIEW THE BURN <span aria-hidden="true">↗</span></a>
+        </div>
+        <ol class="premine-milestones" aria-label="Premine burn milestones">
+          <li class="complete"><span>01</span><div><b>KILO</b><strong>kH/s</strong></div><em>−50,000 QDAY</em></li>
+          <li class="complete"><span>02</span><div><b>MEGA</b><strong>MH/s</strong></div><em>−45,000 QDAY</em></li>
+          <li class="complete"><span>03</span><div><b>GIGA</b><strong>GH/s</strong></div><em>−40,500 QDAY</em></li>
+          <li class="next"><span>NEXT</span><div><b>TERA</b><strong>TH/s</strong></div><em>−36,450 QDAY</em></li>
+        </ol>
+        <div class="premine-address">
+          <span>GENESIS PREMINE ADDRESS</span>
+          <a href="https://explorer.pqday.com/address/qday1pdsa0ezy7y3nnmnxm0tx74q2kd9acvzs8329wfd2n6ycqnmygtt9stpwtsr" target="_blank" rel="noopener noreferrer"><code>qday1pdsa0ezy7y3nnmnxm0tx74q2kd9acvzs8329wfd2n6ycqnmygtt9stpwtsr</code><b aria-hidden="true">↗</b></a>
+        </div>
       </div>
     </section>
 
