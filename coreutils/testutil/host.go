@@ -1,0 +1,618 @@
+package testutil
+
+import (
+	"errors"
+	"fmt"
+	"net"
+	"sync"
+	"testing"
+
+	"go.sia.tech/core/consensus"
+	proto4 "go.sia.tech/core/rhp/v4"
+	"go.sia.tech/core/types"
+	"go.sia.tech/coreutils/chain"
+	rhp4 "go.sia.tech/coreutils/rhp/v4"
+	"go.sia.tech/coreutils/rhp/v4/quic"
+	"go.sia.tech/coreutils/rhp/v4/siamux"
+	"go.sia.tech/coreutils/testutil/certs"
+	"go.uber.org/zap"
+)
+
+// An EphemeralSectorStore is an in-memory minimal rhp4.SectorStore for testing.
+type EphemeralSectorStore struct {
+	mu      sync.Mutex
+	sectors map[types.Hash256]*[proto4.SectorSize]byte
+}
+
+var _ rhp4.Sectors = (*EphemeralSectorStore)(nil)
+
+// DeleteSector deletes a sector from the store.
+func (es *EphemeralSectorStore) DeleteSector(root types.Hash256) error {
+	es.mu.Lock()
+	defer es.mu.Unlock()
+	if _, ok := es.sectors[root]; !ok {
+		return proto4.ErrSectorNotFound
+	}
+	delete(es.sectors, root)
+	return nil
+}
+
+// HasSector checks if a sector is stored in the store.
+func (es *EphemeralSectorStore) HasSector(root types.Hash256) (bool, error) {
+	es.mu.Lock()
+	defer es.mu.Unlock()
+	_, ok := es.sectors[root]
+	return ok, nil
+}
+
+// ReadSector reads a sector from the EphemeralSectorStore.
+func (es *EphemeralSectorStore) ReadSector(root types.Hash256, offset, length uint64) ([]byte, []types.Hash256, error) {
+	switch {
+	case offset >= proto4.SectorSize:
+		return nil, nil, fmt.Errorf("offset exceeds sector size")
+	case length > proto4.SectorSize:
+		return nil, nil, fmt.Errorf("length exceeds sector size")
+	case length > proto4.SectorSize-offset:
+		return nil, nil, fmt.Errorf("read exceeds sector size")
+	case offset%proto4.LeafSize != 0 || length%proto4.LeafSize != 0:
+		return nil, nil, fmt.Errorf("offset and length must be multiples of leaf size")
+	}
+
+	es.mu.Lock()
+	defer es.mu.Unlock()
+	sector, ok := es.sectors[root]
+	if !ok {
+		return nil, nil, proto4.ErrSectorNotFound
+	}
+	start, end := offset/proto4.LeafSize, (offset+length+proto4.LeafSize-1)/proto4.LeafSize
+	segmentStart, segmentEnd := proto4.SectorSubtreeRange(start, end)
+	subtreeCache := proto4.CachedSectorSubtrees(sector)
+	proof := proto4.BuildSectorProof(sector[segmentStart*proto4.LeafSize:segmentEnd*proto4.LeafSize], start, end, subtreeCache)
+	return sector[offset:][:length], proof, nil
+}
+
+// StoreSector stores a sector in the EphemeralSectorStore.
+func (es *EphemeralSectorStore) StoreSector(root types.Hash256, sector *[proto4.SectorSize]byte, _ []types.Hash256, _ uint64) error {
+	es.mu.Lock()
+	defer es.mu.Unlock()
+	es.sectors[root] = sector
+	return nil
+}
+
+// An EphemeralContractor is an in-memory minimal rhp4.Contractor for testing.
+type EphemeralContractor struct {
+	tip              types.ChainIndex
+	contractElements map[types.FileContractID]types.V2FileContractElement
+	contracts        map[types.FileContractID]types.V2FileContract
+	roots            map[types.FileContractID][]types.Hash256
+	locks            map[types.FileContractID]bool
+
+	accounts map[proto4.Account]types.Currency
+	pools    map[proto4.Account]types.Currency
+	// attached preserves attachment order so pools drain in the order they
+	// were attached, after the account's own balance.
+	attached map[proto4.Account][]proto4.Account
+
+	mu       sync.Mutex
+	shutdown chan struct{}
+}
+
+var _ rhp4.Contractor = (*EphemeralContractor)(nil)
+
+// Close closes the contractor by interrupting its background loop
+func (ec *EphemeralContractor) Close() error {
+	close(ec.shutdown)
+	return nil
+}
+
+// V2FileContractElement returns the contract state element for the given contract ID.
+func (ec *EphemeralContractor) V2FileContractElement(contractID types.FileContractID) (types.ChainIndex, types.V2FileContractElement, error) {
+	ec.mu.Lock()
+	defer ec.mu.Unlock()
+
+	element, ok := ec.contractElements[contractID]
+	if !ok {
+		return types.ChainIndex{}, types.V2FileContractElement{}, errors.New("contract not found")
+	}
+
+	// deep-copy element's proof to avoid passing a reference to the
+	// EphemeralContractor's internal state
+	element.StateElement.MerkleProof = append([]types.Hash256(nil), element.StateElement.MerkleProof...)
+	return ec.tip, element, nil
+}
+
+// LockV2Contract locks a contract and returns its current state.
+func (ec *EphemeralContractor) LockV2Contract(contractID types.FileContractID) (rhp4.RevisionState, func(), error) {
+	ec.mu.Lock()
+	defer ec.mu.Unlock()
+
+	if ec.locks[contractID] {
+		return rhp4.RevisionState{}, nil, errors.New("contract already locked")
+	}
+	ec.locks[contractID] = true
+
+	rev, ok := ec.contracts[contractID]
+	if !ok {
+		return rhp4.RevisionState{}, nil, errors.New("contract not found")
+	}
+
+	_, renewed := ec.contracts[contractID.V2RenewalID()]
+
+	var once sync.Once
+	return rhp4.RevisionState{
+			Revision:  rev,
+			Revisable: !renewed && ec.tip.Height < rev.ProofHeight,
+			Renewed:   renewed,
+			Roots:     ec.roots[contractID],
+		}, func() {
+			once.Do(func() {
+				ec.mu.Lock()
+				defer ec.mu.Unlock()
+				ec.locks[contractID] = false
+			})
+		}, nil
+}
+
+// AddV2Contract adds a new contract to the host.
+func (ec *EphemeralContractor) AddV2Contract(formationSet rhp4.TransactionSet, _ proto4.Usage) error {
+	ec.mu.Lock()
+	defer ec.mu.Unlock()
+
+	if len(formationSet.Transactions) == 0 {
+		return errors.New("expected at least one transaction")
+	}
+	formationTxn := formationSet.Transactions[len(formationSet.Transactions)-1]
+	if len(formationTxn.FileContracts) != 1 {
+		return errors.New("expected exactly one contract")
+	}
+	fc := formationTxn.FileContracts[0]
+
+	sigHash := consensus.State{}.ContractSigHash(fc)
+	if !fc.RenterPublicKey.VerifyHash(sigHash, fc.RenterSignature) {
+		return errors.New("invalid renter signature")
+	} else if !fc.HostPublicKey.VerifyHash(sigHash, fc.HostSignature) {
+		return errors.New("invalid host signature")
+	}
+
+	contractID := formationTxn.V2FileContractID(formationTxn.ID(), 0)
+	if _, ok := ec.contracts[contractID]; ok {
+		return errors.New("contract already exists")
+	}
+	ec.contracts[contractID] = fc
+	ec.roots[contractID] = []types.Hash256{}
+	return nil
+}
+
+// RenewV2Contract finalizes an existing contract and adds the renewed contract
+// to the host. The existing contract must be locked before calling this method.
+func (ec *EphemeralContractor) RenewV2Contract(renewalSet rhp4.TransactionSet, _ proto4.Usage) error {
+	ec.mu.Lock()
+	defer ec.mu.Unlock()
+
+	if len(renewalSet.Transactions) == 0 {
+		return errors.New("expected at least one transaction")
+	}
+	renewalTxn := renewalSet.Transactions[len(renewalSet.Transactions)-1]
+	if len(renewalTxn.FileContractResolutions) != 1 {
+		return errors.New("expected exactly one resolution")
+	}
+	resolution := renewalTxn.FileContractResolutions[0]
+	renewal, ok := resolution.Resolution.(*types.V2FileContractRenewal)
+	if !ok {
+		return errors.New("expected renewal resolution")
+	}
+	existingID := types.FileContractID(resolution.Parent.ID)
+
+	existing, ok := ec.contracts[existingID]
+	if !ok {
+		return errors.New("contract not found")
+	}
+
+	contractID := existingID.V2RenewalID()
+	if _, ok := ec.contracts[contractID]; ok {
+		return errors.New("contract already exists")
+	}
+
+	sigHash := consensus.State{}.ContractSigHash(renewal.NewContract)
+	if !existing.RenterPublicKey.VerifyHash(sigHash, renewal.NewContract.RenterSignature) {
+		return errors.New("invalid renter signature")
+	} else if !existing.HostPublicKey.VerifyHash(sigHash, renewal.NewContract.HostSignature) {
+		return errors.New("invalid host signature")
+	}
+
+	ec.contracts[contractID] = renewal.NewContract
+	ec.roots[contractID] = append([]types.Hash256(nil), ec.roots[existingID]...)
+	return nil
+}
+
+// ReviseV2Contract atomically revises a contract and updates its sector roots
+// and usage.
+func (ec *EphemeralContractor) ReviseV2Contract(contractID types.FileContractID, revision types.V2FileContract, roots []types.Hash256, _ proto4.Usage) error {
+	ec.mu.Lock()
+	defer ec.mu.Unlock()
+
+	existing, ok := ec.contracts[contractID]
+	if !ok {
+		return errors.New("contract not found")
+	} else if revision.RevisionNumber <= existing.RevisionNumber {
+		return errors.New("revision number must be greater than existing")
+	}
+
+	sigHash := consensus.State{}.ContractSigHash(revision)
+	if !existing.RenterPublicKey.VerifyHash(sigHash, revision.RenterSignature) {
+		return errors.New("invalid renter signature")
+	} else if !existing.HostPublicKey.VerifyHash(sigHash, revision.HostSignature) {
+		return errors.New("invalid host signature")
+	}
+
+	ec.contracts[contractID] = revision
+	ec.roots[contractID] = append([]types.Hash256(nil), roots...)
+	return nil
+}
+
+// AccountBalance returns the balance of an account.
+func (ec *EphemeralContractor) AccountBalance(account proto4.Account) (types.Currency, error) {
+	ec.mu.Lock()
+	defer ec.mu.Unlock()
+	balance := ec.accounts[account]
+	return balance, nil
+}
+
+// AccountBalances returns the balances of multiple accounts.
+// The order of the returned balances corresponds to the order of the input
+// accounts. If an account is not found, its balance will be types.ZeroCurrency.
+func (ec *EphemeralContractor) AccountBalances(accounts []proto4.Account) ([]types.Currency, error) {
+	ec.mu.Lock()
+	defer ec.mu.Unlock()
+	balances := make([]types.Currency, 0, len(accounts))
+	for _, account := range accounts {
+		balances = append(balances, ec.accounts[account])
+	}
+	return balances, nil
+}
+
+// CreditAccountsWithContract credits accounts with the given deposits and
+// revises the contract revision. The contract must be locked before calling
+// this method.
+func (ec *EphemeralContractor) CreditAccountsWithContract(deposits []proto4.AccountDeposit, contractID types.FileContractID, revision types.V2FileContract, _ proto4.Usage) ([]types.Currency, error) {
+	ec.mu.Lock()
+	defer ec.mu.Unlock()
+
+	existing, ok := ec.contracts[contractID]
+	if !ok {
+		return nil, errors.New("contract not found")
+	} else if revision.RevisionNumber <= existing.RevisionNumber {
+		return nil, errors.New("revision number must be greater than existing")
+	}
+
+	sigHash := consensus.State{}.ContractSigHash(revision)
+	if !existing.RenterPublicKey.VerifyHash(sigHash, revision.RenterSignature) {
+		return nil, errors.New("invalid renter signature")
+	} else if !existing.HostPublicKey.VerifyHash(sigHash, revision.HostSignature) {
+		return nil, errors.New("invalid host signature")
+	}
+
+	var balance = make([]types.Currency, 0, len(deposits))
+	for _, deposit := range deposits {
+		ec.accounts[deposit.Account] = ec.accounts[deposit.Account].Add(deposit.Amount)
+		balance = append(balance, ec.accounts[deposit.Account])
+	}
+
+	ec.contracts[contractID] = revision
+	return balance, nil
+}
+
+// DebitAccount debits an account by the given amount. The account's own
+// balance drains first; if insufficient, attached pools are drained in
+// attachment order. Returns ErrNotEnoughFunds without mutating any balances
+// if the combined drawable amount is insufficient.
+func (ec *EphemeralContractor) DebitAccount(account proto4.Account, usage proto4.Usage) error {
+	ec.mu.Lock()
+	defer ec.mu.Unlock()
+
+	cost := usage.RenterCost()
+	drawable := ec.accounts[account]
+	for _, pool := range ec.attached[account] {
+		if drawable.Cmp(cost) >= 0 {
+			break
+		}
+		drawable = drawable.Add(ec.pools[pool])
+	}
+	if drawable.Cmp(cost) < 0 {
+		return proto4.ErrNotEnoughFunds
+	}
+
+	remaining := cost
+	if balance := ec.accounts[account]; !balance.IsZero() {
+		take := balance
+		if balance.Cmp(remaining) > 0 {
+			take = remaining
+		}
+		ec.accounts[account] = balance.Sub(take)
+		remaining = remaining.Sub(take)
+	}
+	for _, pool := range ec.attached[account] {
+		if remaining.IsZero() {
+			break
+		}
+		balance := ec.pools[pool]
+		if balance.IsZero() {
+			continue
+		}
+		take := balance
+		if balance.Cmp(remaining) > 0 {
+			take = remaining
+		}
+		ec.pools[pool] = balance.Sub(take)
+		remaining = remaining.Sub(take)
+	}
+	return nil
+}
+
+// PoolBalances returns the balances of multiple pools. The order of the
+// returned balances corresponds to the order of the input pools. If a pool
+// is not found, its balance will be types.ZeroCurrency.
+func (ec *EphemeralContractor) PoolBalances(pools []proto4.Account) ([]types.Currency, error) {
+	ec.mu.Lock()
+	defer ec.mu.Unlock()
+	balances := make([]types.Currency, 0, len(pools))
+	for _, pool := range pools {
+		balances = append(balances, ec.pools[pool])
+	}
+	return balances, nil
+}
+
+// CreditPoolsWithContract credits pools with the given deposits and revises
+// the contract revision. Pools auto-create on first credit.
+func (ec *EphemeralContractor) CreditPoolsWithContract(deposits []proto4.AccountDeposit, contractID types.FileContractID, revision types.V2FileContract, _ proto4.Usage) ([]types.Currency, error) {
+	ec.mu.Lock()
+	defer ec.mu.Unlock()
+
+	existing, ok := ec.contracts[contractID]
+	if !ok {
+		return nil, errors.New("contract not found")
+	} else if revision.RevisionNumber <= existing.RevisionNumber {
+		return nil, errors.New("revision number must be greater than existing")
+	}
+
+	sigHash := consensus.State{}.ContractSigHash(revision)
+	if !existing.RenterPublicKey.VerifyHash(sigHash, revision.RenterSignature) {
+		return nil, errors.New("invalid renter signature")
+	} else if !existing.HostPublicKey.VerifyHash(sigHash, revision.HostSignature) {
+		return nil, errors.New("invalid host signature")
+	}
+
+	balances := make([]types.Currency, 0, len(deposits))
+	for _, deposit := range deposits {
+		ec.pools[deposit.Account] = ec.pools[deposit.Account].Add(deposit.Amount)
+		balances = append(balances, ec.pools[deposit.Account])
+	}
+
+	ec.contracts[contractID] = revision
+	return balances, nil
+}
+
+// AttachPools applies a batch of attachments atomically. All referenced
+// pools must exist before any mutation occurs.
+func (ec *EphemeralContractor) AttachPools(attachments []proto4.PoolAttachment) error {
+	ec.mu.Lock()
+	defer ec.mu.Unlock()
+
+	for _, a := range attachments {
+		if _, ok := ec.pools[a.Pool]; !ok {
+			return proto4.ErrPoolNotFound
+		}
+	}
+	for _, a := range attachments {
+		already := false
+		for _, existing := range ec.attached[a.Account] {
+			if existing == a.Pool {
+				already = true
+				break
+			}
+		}
+		if !already {
+			ec.attached[a.Account] = append(ec.attached[a.Account], a.Pool)
+		}
+	}
+	return nil
+}
+
+// DetachPools applies a batch of detachments atomically. Idempotent on
+// missing attachments.
+func (ec *EphemeralContractor) DetachPools(detachments []proto4.PoolDetachment) error {
+	ec.mu.Lock()
+	defer ec.mu.Unlock()
+
+	for _, d := range detachments {
+		links := ec.attached[d.Account]
+		for i, existing := range links {
+			if existing == d.Pool {
+				ec.attached[d.Account] = append(links[:i], links[i+1:]...)
+				break
+			}
+		}
+		if len(ec.attached[d.Account]) == 0 {
+			delete(ec.attached, d.Account)
+		}
+	}
+	return nil
+}
+
+// UpdateChainState updates the EphemeralContractor's state based on the
+// reverted and applied chain updates.
+func (ec *EphemeralContractor) UpdateChainState(reverted []chain.RevertUpdate, applied []chain.ApplyUpdate) error {
+	ec.mu.Lock()
+	defer ec.mu.Unlock()
+
+	for _, cru := range reverted {
+		for _, fced := range cru.V2FileContractElementDiffs() {
+			if _, ok := ec.contracts[fced.V2FileContractElement.ID]; !ok {
+				continue
+			}
+			switch {
+			case fced.Created:
+				delete(ec.contractElements, fced.V2FileContractElement.ID)
+			case fced.Resolution != nil:
+				ec.contractElements[fced.V2FileContractElement.ID] = fced.V2FileContractElement.Copy()
+			case fced.Revision != nil:
+				fced.V2FileContractElement.V2FileContract = *fced.Revision
+				ec.contractElements[fced.V2FileContractElement.ID] = fced.V2FileContractElement.Copy()
+			}
+		}
+
+		for id, fce := range ec.contractElements {
+			cru.UpdateElementProof(&fce.StateElement)
+			ec.contractElements[id] = fce.Move()
+		}
+		ec.tip = cru.State.Index
+	}
+	for _, cau := range applied {
+		for _, fced := range cau.V2FileContractElementDiffs() {
+			if _, ok := ec.contracts[fced.V2FileContractElement.ID]; !ok {
+				continue
+			}
+			switch {
+			case fced.Created:
+				ec.contractElements[fced.V2FileContractElement.ID] = fced.V2FileContractElement.Copy()
+			case fced.Resolution != nil:
+				delete(ec.contractElements, fced.V2FileContractElement.ID)
+			case fced.Revision != nil:
+				fced.V2FileContractElement.V2FileContract = *fced.Revision
+				ec.contractElements[fced.V2FileContractElement.ID] = fced.V2FileContractElement.Copy()
+			}
+		}
+
+		for id, fce := range ec.contractElements {
+			cau.UpdateElementProof(&fce.StateElement)
+			ec.contractElements[id] = fce.Move()
+		}
+		ec.tip = cau.State.Index
+	}
+	return nil
+}
+
+// Tip returns the current chain tip.
+func (ec *EphemeralContractor) Tip() (types.ChainIndex, error) {
+	ec.mu.Lock()
+	defer ec.mu.Unlock()
+	return ec.tip, nil
+}
+
+// An EphemeralSettingsReporter is an in-memory minimal rhp4.SettingsReporter
+// for testing.
+type EphemeralSettingsReporter struct {
+	mu       sync.Mutex
+	settings proto4.HostSettings
+}
+
+var _ rhp4.Settings = (*EphemeralSettingsReporter)(nil)
+
+// RHP4Settings implements the rhp4.SettingsReporter interface.
+func (esr *EphemeralSettingsReporter) RHP4Settings() proto4.HostSettings {
+	esr.mu.Lock()
+	defer esr.mu.Unlock()
+	return esr.settings
+}
+
+// Update updates the settings reported by the EphemeralSettingsReporter.
+func (esr *EphemeralSettingsReporter) Update(settings proto4.HostSettings) {
+	esr.mu.Lock()
+	defer esr.mu.Unlock()
+	esr.settings = settings
+}
+
+// ServeSiaMux starts a RHP4 host listening on a random port and returns the address.
+func ServeSiaMux(tb testing.TB, s *rhp4.Server, log *zap.Logger, opts ...siamux.ServeOption) string {
+	l, err := net.Listen("tcp", "localhost:0")
+	if err != nil {
+		tb.Fatal(err)
+	}
+	tb.Cleanup(func() { l.Close() })
+
+	go siamux.Serve(l, s, log, opts...)
+	return l.Addr().String()
+}
+
+// ServeQUIC starts a RHP4 host listening on a random port and returns the address.
+func ServeQUIC(tb testing.TB, s *rhp4.Server, opts ...quic.ServeOption) string {
+	udpAddr, err := net.ResolveUDPAddr("udp", "localhost:0")
+	if err != nil {
+		tb.Fatal(err)
+	}
+
+	conn, err := net.ListenUDP("udp", udpAddr)
+	if err != nil {
+		tb.Fatal(err)
+	}
+	tb.Cleanup(func() { conn.Close() })
+
+	l, err := quic.Listen(conn, &certs.EphemeralCertManager{})
+	if err != nil {
+		tb.Fatal(err)
+	}
+	tb.Cleanup(func() { l.Close() })
+	go quic.Serve(l, s, opts...)
+	return conn.LocalAddr().String()
+}
+
+// NewEphemeralSettingsReporter creates an EphemeralSettingsReporter for testing.
+func NewEphemeralSettingsReporter() *EphemeralSettingsReporter {
+	return &EphemeralSettingsReporter{}
+}
+
+// NewEphemeralSectorStore creates an EphemeralSectorStore for testing.
+func NewEphemeralSectorStore() *EphemeralSectorStore {
+	return &EphemeralSectorStore{
+		sectors: make(map[types.Hash256]*[proto4.SectorSize]byte),
+	}
+}
+
+// NewEphemeralContractor creates an EphemeralContractor for testing.
+func NewEphemeralContractor(cm *chain.Manager) *EphemeralContractor {
+	ec := &EphemeralContractor{
+		contractElements: make(map[types.FileContractID]types.V2FileContractElement),
+		contracts:        make(map[types.FileContractID]types.V2FileContract),
+		roots:            make(map[types.FileContractID][]types.Hash256),
+		locks:            make(map[types.FileContractID]bool),
+		accounts:         make(map[proto4.Account]types.Currency),
+		pools:            make(map[proto4.Account]types.Currency),
+		attached:         make(map[proto4.Account][]proto4.Account),
+		shutdown:         make(chan struct{}),
+	}
+
+	reorgCh := make(chan types.ChainIndex, 1)
+	cm.OnReorg(func(index types.ChainIndex) {
+		select {
+		case reorgCh <- index:
+		default:
+		}
+	})
+
+	go func() {
+		for {
+			select {
+			case <-reorgCh:
+			case <-ec.shutdown:
+				return
+			}
+			for {
+				tip, err := ec.Tip()
+				if err != nil {
+					panic(err)
+				}
+				reverted, applied, err := cm.UpdatesSince(tip, 1000)
+				if err != nil {
+					panic(err)
+				} else if len(reverted) == 0 && len(applied) == 0 {
+					break
+				}
+
+				if err := ec.UpdateChainState(reverted, applied); err != nil {
+					panic(err)
+				}
+			}
+		}
+	}()
+	return ec
+}

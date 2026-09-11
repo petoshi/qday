@@ -1,0 +1,597 @@
+## 0.23.5 (2026-07-08)
+
+### Fixes
+
+- Update go.sia.tech/coreutils to v0.21.6.
+
+## 0.23.4 (2026-07-06)
+
+### Fixes
+
+- Fixed sync CI job.
+- Fixed syncer crashes.
+- Updated coreutils to v0.21.5.
+
+## 0.23.3 (2026-07-06)
+
+### Fixes
+
+- Fix missing tpool check.
+
+## 0.23.2 (2026-07-05)
+
+### Features
+
+- Added instant sync to sync utility.
+- Updated coreutils to v0.21.4.
+
+### Fixes
+
+- Fixed `TestSyncerReorg` NDF.
+
+## 0.23.1 (2026-07-03)
+
+### Fixes
+
+- Updated readme
+
+## 0.23.0 (2026-07-03)
+
+### Breaking Changes
+
+- Update coreutils to v0.21.2
+
+## 0.22.1 (2026-06-23)
+
+### Fixes
+
+- Add MaxInflightRPCsPerSubnet - a per-subnet limit on concurrent inbound RPCS
+- enforce reorg path length limit inside reorgPath
+- Only set default timeout in openStream when the context has no deadline and handle context deadlines via goroutine.
+- Reduced host sector hashing in RPCWriteSector.
+- Update mux to v1.5.1.
+
+## 0.22.0 (2026-05-12)
+
+### Breaking Changes
+
+#### Add RHP4 pool RPC handlers, renter helpers, and Contractor interface methods for shared balance pools.
+
+Hosts can now back accounts with shared balance pools so renters don't need to pre-fund and continually rebalance every account. A renter funds a pool once and attaches as many accounts as they want; debits drain the account's own balance first and fall through to attached pools, which keeps per-account allowances small and reduces the total capital sitting idle in account balances. This is the host-side companion to the new RHP4 pool RPCs.
+
+Extends the RHP4 `Contractor` interface with `PoolBalances`, `CreditPoolsWithContract`, `AttachPools`, and `DetachPools` (existing implementations must be updated). Adds host-side handlers for the new pool RPCs and renter-side helpers `RPCReplenishPools`, `RPCAttachPools`, and `RPCDetachPools`. `DebitAccount` semantics are extended to drain the account's own balance first, then attached pools in attachment order.
+
+### Fixes
+
+- Check downloaded data length in RPCReadSector before proof validation for a more meaningful error.
+- Fix incorrect v2 pool index.
+- Wrap client rpc errors in RPCError.
+
+## 0.21.3 (2026-04-21)
+
+### Fixes
+
+- Fix a bug where a changed host wallet address leads to failed renewals.
+- Update webtransport-go to `05fe5253a73c`
+
+## 0.21.2 (2026-04-10)
+
+### Features
+
+- RHP4 graceful shutdown
+
+### Fixes
+
+- Always cancel read side of QUIC stream when calling stream.Close.
+- Fixed an edge case in `RPCFreeSectors` where the deletion logic would keep a sector root that was supposed to be deleted.
+- Pass proper descriptions when closing QUIC connection.
+- Fixed excessive "peer relayed a v2 header with unknown parent" log spam by only relaying headers after sync when the synced blocks became the new tip.
+- Update Go version to 1.26.0.
+- Update mux dependency to v1.5.0.
+- Use DEBUG log level instead of ERROR for RPCs failing due to the peer closing the connection on their end.
+
+## 0.21.1 (2026-02-25)
+
+### Fixes
+
+- Fix edge case where a node incorrectly sends the genesis state to peers while syncing.
+- Fix NDF in TestFormContractBasis
+- Fix parallelSync stalling when all workers fail.
+- Mark peer synced if there are no more blocks to sync.
+- Reduced excessive logging in syncer.
+- Validate RPCFundAccountsRequest
+
+## 0.21.0 (2026-02-04)
+
+### Breaking Changes
+
+#### Changed block pruning to an active decision for integrators rather than a passive option
+
+This fixes a race condition on some nodes when chain subscribers are slow where blocks would be removed from the store before they could be indexed.
+
+### Fixes
+
+- Enable StreamResetPartialDelivery when listening for QUIC connections.
+- Use custom sectorBuffer rather than bytes.Buffer in handleRPCWriteSector.
+
+## 0.20.1 (2026-01-05)
+
+### Fixes
+
+- Fix a race in the goroutine spun up by NewEphemeralContractor.
+- Fixed an issue where fully connected peers could get stuck on a stale chain after a reorg.
+
+## 0.20.0 (2025-12-18)
+
+### Breaking Changes
+
+- Add option to add middleware to dialed or accepted QUIC streams.
+
+### Features
+
+- Allow for passing a custom Dialer to the Syncer.
+- Renamed SendCheckpoint to RetrieveCheckpoint and now accepts multiple peers.
+- Updated bootstrap peers
+
+### Fixes
+
+- Fix double-close of finishCh in parallelSync.
+- Syncer: return connected peers first to avoid stale peers in the store.
+
+## 0.19.0 (2025-12-01)
+
+### Breaking Changes
+
+- Update ReadSector method in Sectors interface to accept a range and return a proof.
+
+### Features
+
+- Updated ephemeral host to support partial reads.
+
+### Fixes
+
+- Fix QUIC streams not getting closed properly.
+- Set quic keepalive period and max keepalive timeout.
+- Update core dependency to include ReadSectorRoot.
+- Updated list of bootstrap peers for mainnet.
+- Use OpenStreamSync instead of OpenStream to avoid DialStream failing due to "too many open streams".
+
+## 0.18.7 (2025-11-10)
+
+### Features
+
+- Added SingleAddressWallet.SplitUTXO to fragment wallets. This function is used for contract maintenance where a large number of UTXOs is preferred.
+- Update core dependency to fix MaxCollateral check for partial contract refreshes and increment Protocol Version to 5.0.2.
+
+#### Implement parallel syncing
+
+Replaces the old serial syncing algorithm with a parallel one. In brief:
+
+```
+Old algorithm:
+1. For each unsynced peer, request blocks until the peer reports no further blocks
+
+New algorithm:
+1. In parallel, for each unsynced peer, request up to 10k headers
+2. In parallel, request sections of the header chain from peers in batches of 100 blocks
+3. Poll for new peers in the background and immediately assign them work
+4. After assigning the final batch, redundantly assign any remaining in-progress batches to idle peers
+5. Add batches of blocks to the Manager in a separate goroutine to avoid blocking peer I/O
+6. When requesting v2 blocks, perform validation within each worker goroutine, rather than in the Manager goroutine
+```
+
+Empirically, the new algorithm is anywhere from 2x-10x faster, particularly once it reaches the v2 require height and can start validating in parallel as well.
+
+#### Instant syncing
+
+Adds a new chain.DB constructor and a helper function for fetching checkpoints.
+
+### Fixes
+
+- Update core dependency from 0.17.5 to 0.18.0.
+- Use a more aggressive keepalive configuration in siamux.Serve.
+
+## 0.18.6 (2025-10-15)
+
+### Fixes
+
+- Updated optimal SiaMux frame size to match v2 padding.
+- Updated core to v0.18.0
+
+## 0.18.5 (2025-09-24)
+
+### Fixes
+
+- Fixed an edge-case where transactions make it into the local pool causing them to not be broadcast.
+
+## 0.18.4 (2025-09-05)
+
+### Features
+
+- Update protocolVersion to v5.0.1.
+
+## 0.18.3 (2025-09-02)
+
+### Fixes
+
+- Update core dependency from v0.17.3 to v0.17.5.
+
+## 0.18.2 (2025-08-26)
+
+### Features
+
+- Make RPCTimeout configurable
+
+### Fixes
+
+- Set keepalive period for siamux tcp connections.
+
+## 0.18.1 (2025-08-21)
+
+### Fixes
+
+- Fix RPCAppendSectors and RPCSectorRoots not supporting MaxSectorBatchSize.
+
+## 0.18.0 (2025-08-18)
+
+### Breaking Changes
+
+- Reset Zen testnet.
+
+### Features
+
+- Add ProtocolVersion constants to rhp package.
+- Specify nonce factors for Mainnet and Zen.
+
+### Fixes
+
+- Display migration progress more human-friendly.
+- Increase default RHP4 RPC timeout to 3 minutes.
+
+## 0.17.0 (2025-07-29)
+
+### Breaking Changes
+
+- Add method to get individual wallet event to `SingleAddressWallet`
+- Removed unsupported testnets.
+- Removed unused syncer interface from RHP4 server.
+
+#### Added RPCRefreshPartialRollover
+
+Previously, renters and hosts had to rollover all funds when refreshing a contract. With this change, renters can set their spendable allowance without forcing an increase and hosts only have to rollover their existing risked collateral and revenue. This change increases efficiency of refreshing without compromising the collateral guarantees of existing data or forcing hosts to lock additional collateral that won't be utilized.
+
+#### Remove persistence for locked UTXOs
+
+Now that the tpool is persisted, UTXOs that have been broadcast will be readded on startup. This should mean that locked UTXOs can be ephemeral again since their primary purpose is to prevent double spends during RPCs.
+
+#### Removed deprecated V1 Syncer RPCs
+
+Removed RPCSendBlocks and RPCSendBlk (made obsolete by RPCSendV2Blocks and RPCSendCheckpoint), as well as RPCRelayHeader and RPCSendTransactionSet (as no more v1 blocks or v1 transactions can be mined)
+
+### Features
+
+- Added RPCSendHeaders to sync by block headers
+- Added a check that consensus.Network is always exhaustive.
+- Fix RPCError code in RPCVerifySector
+- Periodically rebroadcast transactions created with SingleAddressWallet
+
+### Fixes
+
+- Remove leftover utxo locking code from EphemeralWalletStore
+- Return ErrNotAcceptingContracts in RPC form, renew, and refresh
+
+## 0.16.5 (2025-07-07)
+
+### Features
+
+- Remove RedistributeV1|2 in favour of Redistribute. Return the index so the caller can use it as the basis when broadcasting the transactions.
+
+### Fixes
+
+- Remove faulty utxo release, it is redundant since we lock utxos as the final step.
+- Use only confirmed UTXOs for contract formation and renewals.
+
+## 0.16.4 (2025-07-01)
+
+### Fixes
+
+- Fix incorrect ordering of contract expirations preventing a consensus resync from scratch
+
+## 0.16.3 (2025-06-19)
+
+### Features
+
+- Require peers to support V2.
+
+### Fixes
+
+- Increase default MaxInflightRPCs
+- prevent reverted coinbase transactions from spamming the transaction pool
+- Update core to v0.14.0
+
+## 0.16.2 (2025-06-17)
+
+### Fixes
+
+- Fixed an issue with a single syncing peer from taking over the sync loop.
+
+#### Don't ignore missing supplement in updateV2TransactionProofs
+
+##265 by @lukechampine
+
+The logic introduced in #193 caused a panic when a block supplement was missing: we would create an empty supplement, try to use it, then panic with out-of-range when trying to fetch stuff from the empty supplement.
+
+In case you're wondering how we could end up in a situation where we have a block, but not a supplement: the supplement is only calculated when we fully validate and apply the block. If we receive a block that isn't on the best chain, we'll store it without also computing and storing the supplement. If someone then calls `V2TransactionSet` with a basis referencing that block, we'll attempt to use it.
+
+## 0.16.1 (2025-06-14)
+
+### Fixes
+
+- Added defer recover to prevent nodes from panicking due to uncaught bugs.
+- Fixed a panic when attempting to update element proofs.
+- Update core to v0.13.2
+
+#### TxPool fixes
+
+##260 by @lukechampine
+
+In the course of writing a test for full txpool behavior, I found a bug in the index handling: all of the transactions were being assigned an index of `len(txpool.txns)`, instead of sequential ones! This was almost certainly the result of copy-pasting the `m.txpool.indices[txid] = len(m.txpool.txns)` from `AddPoolTransactions`; it breaks in `revalidatePool` because we're appending to `filtered`, not `m.txpool.txns` directly.
+
+This is probably the root cause of https://github.com/SiaFoundation/coreutils/issues/256. We had been blaming `parentMap` for that, so I ripped it out. I think it should stay ripped out, though, since benchmarks show that the operation it's optimizing is not particularly slow in the first place.
+
+I also added an important validation step to `updateV2TransactionProofs`. This should prevent the panic seen in https://github.com/SiaFoundation/coreutils/pull/254.
+
+## 0.16.0 (2025-06-05)
+
+### Breaking Changes
+
+- Add txn broadcast methods to SingleAddressWallet which validate transactions and broadcast them to the network.
+
+#### Improve locking behaviour by removing the tip from memory and returning it alongside the unspent elements from the store.
+
+Changes the store interface for the `SingleAddressWallet` to return the tip. This must be atomic with the current state of the proofs stored in the database.
+
+### Features
+
+- Add a method for getting a fee recommendation from the SingleAddressWallet which caps the fee at a sane value.
+
+### Fixes
+
+- Fixed RHP4 webtransport rejecting cross-origin connections.
+- Updated bootstrap peers.
+
+## 0.15.2 (2025-05-29)
+
+### Fixes
+
+- Update core to v0.13.1
+
+## 0.15.1 (2025-05-29)
+
+### Fixes
+
+- Fix race in FundV2Transaction
+- Fixed an issue sending partial blocks to peers.
+
+## 0.15.0 (2025-05-26)
+
+### Breaking Changes
+
+- Updated core with new miner committment hash
+
+## 0.14.0 (2025-05-23)
+
+### Breaking Changes
+
+- Changed RPCAppendSectors and RPCFreeSectors methods to use ContractSigner instead of taking a private key directly
+- The SingleAddressWalletStore now persists locked UTXOs.
+
+### Features
+
+- Return rhp4.ErrInvalidSignature consistently when we fail to validate the challenge signature.
+
+### Fixes
+
+- Removed invalid transaction set sticky error
+
+## 0.13.6 (2025-05-14)
+
+### Fixes
+
+- Fixed v2 transaction events not including convenience fields
+
+## 0.13.5 (2025-05-14)
+
+### Fixes
+
+- Update core to v0.12.3
+
+## 0.13.4 (2025-05-14)
+
+### Fixes
+
+- Update core to v0.12.2
+
+## 0.13.3 (2025-05-09)
+
+### Fixes
+
+- Fix deadlock in syncer.Close
+
+## 0.13.2 (2025-04-28)
+
+### Features
+
+- Return error when transaction set relay fails
+
+### Fixes
+
+- Update coreutils to v0.12.0
+
+#### Export 'missing block at index' error
+
+##217 by @chris124567
+
+The "missing block at index" error is used in multiple places to detect that a chain migration happened so that the app knows to reset whatever state it stored previously.  This PR exports it so that looking at the error string is not necessary.
+
+https://github.com/SiaFoundation/hostd/blob/711ac3eb1da09e4d6a9ff17a2efe3555d70b8185/index/update.go#L36
+https://github.com/SiaFoundation/walletd/blob/d91147b7ec52b2261779949905c8e0fd3c0ad5c7/wallet/manager.go#L733
+
+And recently in explored:
+https://github.com/SiaFoundation/explored/pull/212/files#diff-b973ebcbcd81d6f5eb333f7b87b7366e9886270ccdef647b80df03f94a1156dcR185
+
+## 0.13.1 (2025-04-23)
+
+### Fixes
+
+- Update core to v0.11.0
+
+## 0.13.0 (2025-04-23)
+
+### Breaking Changes
+
+#### DB migration
+
+This adds a generic `MigrateDB` function for updating consensus databases, and a v1->v2 migration that recomputes the full element tree, which fixes Zen.
+
+### Fixes
+
+- Added a default deadline of 1m to the SiaMux dialer. If the context has a deadline, it will override the default.
+- Return up to maxBlocks updates, not up to maxBlocks+1
+- Fix ExpiringFileContracts ordering when reverting blocks
+
+#### More aggressive migration
+
+##210 by @lukechampine
+
+Previous piecemeal attempts at migration produced further discrepancies in the DB. Here we avoid this by taking a scorched-earth approach, nuking basically everything in the DB and resyncing from ourselves. Since sidechains cannot easily be fixed the same way, they are simply deleted. This produces a final state equivalent to resyncing from a good peer.
+
+I have tested this with both Zen and Erravimus consensus.dbs, and it appears to successfully repair them to a valid state. (I reached block 113487 on Zen, and 3311 on Erravimus.) I suggest we deploy this to Erravimus, confirm that we can continue mining there, then deploy to Zen miners. Note that existing Zen blocks above 113487 will (eventually) be reorged.
+
+Performance-wise, there is room for improvement here. The old migration code achieved significant speedups by caching DB writes in memory and sorting them before flushing. I am tempted to apply a similar strategy to the `DBStore` itself, in a more generic fashion -- but this is slightly risky and not critical, so if I do explore it, it'll be on a different branch.
+
+## 0.12.1 (2025-03-11)
+
+### Fixes
+
+- Fix RHP4 client not respecting timeouts
+
+## 0.12.0 (2025-02-28)
+
+### Breaking Changes
+
+#### Separate RHP4 Transports
+
+The SiaMux and QUIC transports are now separated into `go.sia.tech/rhp/v4/siamux` and `go.sia.tech/rhp/v4/quic` packages. Both packages define a `Dial` and `Serve` helper that can be used to either start a transport server or connect to a host using the transport.
+
+### Features
+
+#### Add RPCReplenishAccounts Implementation
+
+Implements RPCReplenishAccounts in the RHP4 client and server enabling clients managing a large number of accounts to fund them quicker
+
+### Fixes
+
+- Fixes an issue where wallet redistributing would fail if the number of outputs created were less than requested
+- Fix data race in EphemeralWalletStore.
+- Fixed an issue with event confirmations not being correctly unmarshalled
+- Increase default max streams from 100 to 1000 for QUIC transport
+- Update core to v0.10.2 and mux to v1.4.0
+
+## 0.11.1 (2025-02-10)
+
+### Fixes
+
+- Fixes an issue where redistribution of wallet outputs that require more than a single transaction would produce an invalid transaction set
+
+## 0.11.0 (2025-02-06)
+
+### Breaking Changes
+
+- Add support for QUIC and WebTransport to RHP4
+
+### Fixes
+
+- Fixed data race in EphemeralContractor related to V2FileContractElement.
+- Fixed syncer deadlocking when Connect is called after Close.
+- Set 2 minute deadline for all incoming RPC in syncer
+
+## 0.10.1 (2025-01-18)
+
+### Fixes
+
+- Update core to v0.9.1
+- Use condition rather than polling to determine whether all peers are closed in 'Run'
+
+## 0.10.0 (2025-01-15)
+
+### Breaking Changes
+
+#### Increased V2 Allow Height to 526,000
+
+Delays activation of the v2 hardfork to June 6th, 2025 in response to concerns about the scope of updates necessary for partners to support v2
+
+### Fixes
+
+- Improve locking in SingleAddressWallet by avoiding acquiring the mutex before a db transaction
+- Increased default UTXO reservation in SingleAddressWallet to 3 hours
+
+## 0.9.1 (2025-01-12)
+
+### Fixes
+
+- Release locked host UTXOs if contract formation, renewal, or refresh fails
+- Release locked UTXOs if contract formation, renewal, or refresh fails
+
+## 0.9.0 (2024-12-19)
+
+### Breaking Changes
+
+#### Finalize V2 Hardfork Dates
+
+The V2 hardfork is scheduled to modernize Sia's consensus protocol, which has been untouched since Sia's mainnet launch back in 2014, and improve accessibility of the storage network. To ensure a smooth transition from V1, it will be executed in two phases. Additional documentation on upgrading will be released in the near future.
+
+#### V2 Highlights
+- Drastically reduces blockchain size on disk
+- Improves UTXO spend policies - including HTLC support for Atomic Swaps
+- More efficient contract renewals - reducing lock up requirements for hosts and renters
+- Improved transfer speeds - enables hot storage
+
+#### Phase 1 - Allow Height
+- **Activation Height:** `513400` (March 10th, 2025)
+- **New Features:** V2 transactions, contracts, and RHP4
+- **V1 Support:** Both V1 and V2 will be supported during this phase
+- **Purpose:** This period gives time for integrators to transition from V1 to V2
+- **Requirements:** Users will need to update to support the hardfork before this block height
+
+#### Phase 2 - Require Height
+- **Activation Height:** `526000` (June 6th, 2025)
+- **New Features:** The consensus database can be trimmed to only store the Merkle proofs
+- **V1 Support:** V1 will be disabled, including RHP2 and RHP3. Only V2 transactions will be accepted
+- **Requirements:** Developers will need to update their apps to support V2 transactions and RHP4 before this block height
+
+### Fixes
+
+- Fix rhp4 server not returning ErrNotEnoughFunds when account has insufficient balance
+
+## 0.8.0 (2024-12-13)
+
+### Breaking Changes
+
+#### Add revised and renewed fields to RPCLatestRevision
+
+Adds two additional fields to the RPCLatestRevision response. The Revisable field indicates whether the host will accept further revisions to the contract. A host will not accept revisions too close to the proof window or revisions on contracts that have already been resolved. The Renewed field indicates whether the contract was renewed. If the contract was renewed, the renter can use FileContractID.V2RenewalID to get the ID of the new contract.
+
+- Remove unused duration param from `rhp4.RPCWrite`
+
+### Features
+
+#### Add support for block pruning in v2
+
+The chain manager can now automatically delete blocks after a configurable number of confirmations. Note that this does not apply retroactively.
+
+### Fixes
+
+- Return 0 balance for nonexistent accounts instead of an error
+- Extended TestRPCRenew and TestRPCRefresh with an initial sector upload
+- Fix panic when fetching block with empty block id from ChainManager

@@ -1,0 +1,113 @@
+{
+  "network": {
+    "qday": {
+      "rulesVersion": 2,
+      "domain": "710a192c2abef41f39cb23ef575df376436d61aa54ca84c6ade4831f6fba2244",
+      "canary": [
+        115,
+        67,
+        170,
+        170,
+        183,
+        187,
+        153,
+        147,
+        71,
+        116,
+        11,
+        158,
+        25,
+        50,
+        245,
+        72,
+        112,
+        70,
+        245,
+        107,
+        21,
+        102,
+        171,
+        35,
+        202,
+        192,
+        177,
+        41,
+        173,
+        239,
+        183,
+        113
+      ],
+      "reward": "8000000000000000000000000",
+      "proofFee": "1000000000000000000000000",
+      "miningBlocks": 1000000,
+      "premineAmount": "500000000000000000000000000000",
+      "shieldBlocks": 1440,
+      "decayBlocks": 10080,
+      "decayStep": 60,
+      "activationDelay": 6,
+      "defendBits": 20
+    },
+    "name": "qday-mainnet",
+    "initialCoinbase": "0",
+    "minimumCoinbase": "0",
+    "initialTarget": "0000100000000000000000000000000000000000000000000000000000000000",
+    "blockInterval": 60000000000,
+    "maturityDelay": 60,
+    "hardforkDevAddr": {
+      "height": 0,
+      "oldAddress": "000000000000000000000000000000000000000000000000000000000000000089eb0d6a8a69",
+      "newAddress": "000000000000000000000000000000000000000000000000000000000000000089eb0d6a8a69"
+    },
+    "hardforkTax": {
+      "height": 0
+    },
+    "hardforkStorageProof": {
+      "height": 0
+    },
+    "hardforkOak": {
+      "height": 0,
+      "fixHeight": 0,
+      "genesisTimestamp": "2026-09-11T06:59:00Z"
+    },
+    "hardforkASIC": {
+      "height": 0,
+      "oakTime": 0,
+      "oakTarget": "0000100000000000000000000000000000000000000000000000000000000000",
+      "nonceFactor": 1
+    },
+    "hardforkFoundation": {
+      "height": 0,
+      "primaryAddress": "000000000000000000000000000000000000000000000000000000000000000089eb0d6a8a69",
+      "failsafeAddress": "000000000000000000000000000000000000000000000000000000000000000089eb0d6a8a69"
+    },
+    "hardforkV2": {
+      "allowHeight": 1,
+      "requireHeight": 1,
+      "finalCutHeight": 1,
+      "ephemeralOutputHeight": 1
+    }
+  },
+  "premine": "qday1pdsa0ezy7y3nnmnxm0tx74q2kd9acvzs8329wfd2n6ycqnmygtt9stpwtsr",
+  "genesisMessage": "PQ DAY IS INEVITABLE. YOU'RE CELEBRATING IT WITH ME.",
+  "development": false,
+  "genesis": {
+    "parentID": "0000000000000000000000000000000000000000000000000000000000000000",
+    "nonce": 0,
+    "timestamp": "2026-09-11T06:59:00Z",
+    "minerPayouts": null,
+    "transactions": [
+      {
+        "siacoinOutputs": [
+          {
+            "value": "500000000000000000000000000000",
+            "address": "6c3afc889e24673dccdb7acdea8156697b860a078a8ae4b553d13009ec885acb64386fb15336"
+          }
+        ],
+        "arbitraryData": [
+          "UURBWS9nZW5lc2lzL3YyL3sicWRheSI6eyJydWxlc1ZlcnNpb24iOjIsImRvbWFpbiI6IjcxMGExOTJjMmFiZWY0MWYzOWNiMjNlZjU3NWRmMzc2NDM2ZDYxYWE1NGNhODRjNmFkZTQ4MzFmNmZiYTIyNDQiLCJjYW5hcnkiOlsxMTUsNjcsMTcwLDE3MCwxODMsMTg3LDE1MywxNDcsNzEsMTE2LDExLDE1OCwyNSw1MCwyNDUsNzIsMTEyLDcwLDI0NSwxMDcsMjEsMTAyLDE3MSwzNSwyMDIsMTkyLDE3Nyw0MSwxNzMsMjM5LDE4MywxMTNdLCJyZXdhcmQiOiI4MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwIiwicHJvb2ZGZWUiOiIxMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwIiwibWluaW5nQmxvY2tzIjoxMDAwMDAwLCJwcmVtaW5lQW1vdW50IjoiNTAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwIiwic2hpZWxkQmxvY2tzIjoxNDQwLCJkZWNheUJsb2NrcyI6MTAwODAsImRlY2F5U3RlcCI6NjAsImFjdGl2YXRpb25EZWxheSI6NiwiZGVmZW5kQml0cyI6MjB9LCJuYW1lIjoicWRheS1tYWlubmV0IiwiaW5pdGlhbENvaW5iYXNlIjoiMCIsIm1pbmltdW1Db2luYmFzZSI6IjAiLCJpbml0aWFsVGFyZ2V0IjoiMDAwMDEwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMCIsImJsb2NrSW50ZXJ2YWwiOjYwMDAwMDAwMDAwLCJtYXR1cml0eURlbGF5Ijo2MCwiaGFyZGZvcmtEZXZBZGRyIjp7ImhlaWdodCI6MCwib2xkQWRkcmVzcyI6IjAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA4OWViMGQ2YThhNjkiLCJuZXdBZGRyZXNzIjoiMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDg5ZWIwZDZhOGE2OSJ9LCJoYXJkZm9ya1RheCI6eyJoZWlnaHQiOjB9LCJoYXJkZm9ya1N0b3JhZ2VQcm9vZiI6eyJoZWlnaHQiOjB9LCJoYXJkZm9ya09hayI6eyJoZWlnaHQiOjAsImZpeEhlaWdodCI6MCwiZ2VuZXNpc1RpbWVzdGFtcCI6IjIwMjYtMDktMTFUMDY6NTk6MDBaIn0sImhhcmRmb3JrQVNJQyI6eyJoZWlnaHQiOjAsIm9ha1RpbWUiOjAsIm9ha1RhcmdldCI6IjAwMDAxMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAiLCJub25jZUZhY3RvciI6MX0sImhhcmRmb3JrRm91bmRhdGlvbiI6eyJoZWlnaHQiOjAsInByaW1hcnlBZGRyZXNzIjoiMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDg5ZWIwZDZhOGE2OSIsImZhaWxzYWZlQWRkcmVzcyI6IjAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA4OWViMGQ2YThhNjkifSwiaGFyZGZvcmtWMiI6eyJhbGxvd0hlaWdodCI6MSwicmVxdWlyZUhlaWdodCI6MSwiZmluYWxDdXRIZWlnaHQiOjEsImVwaGVtZXJhbE91dHB1dEhlaWdodCI6MX19",
+          "UFEgREFZIElTIElORVZJVEFCTEUuIFlPVSdSRSBDRUxFQlJBVElORyBJVCBXSVRIIE1FLg=="
+        ]
+      }
+    ]
+  }
+}

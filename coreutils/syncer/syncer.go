@@ -1,0 +1,1203 @@
+package syncer
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"maps"
+	"net"
+	"slices"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"go.sia.tech/core/consensus"
+	"go.sia.tech/core/gateway"
+	"go.sia.tech/core/types"
+	"go.sia.tech/coreutils/threadgroup"
+	"go.uber.org/zap"
+	"lukechampine.com/frand"
+)
+
+// ErrNoPeers is returned when there are no peers available to relay to.
+var ErrNoPeers = errors.New("no peers available")
+
+const (
+	// maxIPv4PrefixBits and maxIPv6PrefixBits are the largest valid prefix
+	// lengths for grouping remote addresses into subnets.
+	maxIPv4PrefixBits = 32
+	maxIPv6PrefixBits = 128
+
+	// defaultInflightIPv4PrefixBits and defaultInflightIPv6PrefixBits are the
+	// prefix lengths used to group remote addresses into subnets when none are
+	// configured (or an invalid value is provided).
+	defaultInflightIPv4PrefixBits = 32
+	defaultInflightIPv6PrefixBits = 48
+)
+
+// A ChainManager manages blockchain state.
+type ChainManager interface {
+	History() ([32]types.BlockID, error)
+	BlocksForHistory(history []types.BlockID, max uint64) ([]types.Block, uint64, error)
+	Headers(index types.ChainIndex, max uint64) ([]types.BlockHeader, uint64, error)
+	Block(id types.BlockID) (types.Block, bool)
+	State(id types.BlockID) (consensus.State, bool)
+	AddBlocks(blocks []types.Block) error
+	AddValidatedV2Blocks(blocks []types.Block, states []consensus.State) error
+	Tip() types.ChainIndex
+	TipState() consensus.State
+
+	PoolTransaction(txid types.TransactionID) (types.Transaction, bool)
+	AddPoolTransactions(txns []types.Transaction) (bool, error)
+	V2PoolTransaction(txid types.TransactionID) (types.V2Transaction, bool)
+	AddV2PoolTransactions(basis types.ChainIndex, txns []types.V2Transaction) (bool, error)
+	TransactionsForPartialBlock(missing []types.Hash256) ([]types.Transaction, []types.V2Transaction)
+}
+
+// PeerInfo contains metadata about a peer.
+type PeerInfo struct {
+	Address      string        `json:"address"`
+	FirstSeen    time.Time     `json:"firstSeen"`
+	LastConnect  time.Time     `json:"lastConnect,omitempty"`
+	SyncedBlocks uint64        `json:"syncedBlocks,omitempty"`
+	SyncDuration time.Duration `json:"syncDuration,omitempty"`
+}
+
+// A PeerStore stores peers and bans.
+type PeerStore interface {
+	// AddPeer adds a peer to the store. If the peer already exists, nil should
+	// be returned.
+	AddPeer(addr string) error
+	// Peers returns the set of known peers.
+	Peers() ([]PeerInfo, error)
+	// PeerInfo returns the metadata for the specified peer or ErrPeerNotFound
+	// if the peer wasn't found in the store.
+	PeerInfo(addr string) (PeerInfo, error)
+	// UpdatePeerInfo updates the metadata for the specified peer. If the peer
+	// is not found, the error should be ErrPeerNotFound.
+	UpdatePeerInfo(addr string, fn func(*PeerInfo)) error
+	// Ban temporarily bans one or more IPs. The addr should either be a single
+	// IP with port (e.g. 1.2.3.4:5678) or a CIDR subnet (e.g. 1.2.3.4/16).
+	Ban(addr string, duration time.Duration, reason string) error
+
+	// Banned returns true, nil if the peer is banned.
+	Banned(addr string) (bool, error)
+}
+
+var (
+	// ErrPeerBanned is returned when a peer is banned.
+	ErrPeerBanned = errors.New("peer is banned")
+	// ErrPeerNotFound is returned when the peer is not found.
+	ErrPeerNotFound = errors.New("peer not found")
+)
+
+// Subnet normalizes the provided CIDR subnet string.
+func Subnet(addr, mask string) string {
+	ip, ipnet, err := net.ParseCIDR(addr + mask)
+	if err != nil {
+		return "" // shouldn't happen
+	}
+	return ip.Mask(ipnet.Mask).String() + mask
+}
+
+// maxHostLen is the maximum length of a peer's host component per RFC 1035.
+const maxHostLen = 253
+
+func validatePeer(addr string) error {
+	host, portStr, err := net.SplitHostPort(addr)
+	if err != nil {
+		return err
+	} else if len(host) == 0 {
+		return errors.New("empty host")
+	} else if len(host) > maxHostLen {
+		return errors.New("host too long")
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil || port <= 0 || port > 65535 {
+		return errors.New("invalid port")
+	}
+	return nil
+}
+
+type config struct {
+	SeedMode                   bool
+	SeedPeers                  []string
+	BootstrapPeers             []string
+	BootstrapMinPeers          int
+	BootstrapStability         time.Duration
+	SeedDNSRefresh             time.Duration
+	Resolver                   IPResolver
+	Dialer                     Dialer
+	MaxInboundPeers            int
+	MaxOutboundPeers           int
+	MaxInflightRPCs            int
+	MaxInflightRPCsPerSubnet   int
+	InflightIPv4PrefixBits     int
+	InflightIPv6PrefixBits     int
+	RPCTimeout                 time.Duration
+	ConnectTimeout             time.Duration
+	ShareNodesTimeout          time.Duration
+	SendBlockTimeout           time.Duration
+	SendTransactionsTimeout    time.Duration
+	RelayHeaderTimeout         time.Duration
+	RelayBlockOutlineTimeout   time.Duration
+	RelayTransactionSetTimeout time.Duration
+	SendHeadersTimeout         time.Duration
+	MaxSendHeaders             uint64
+	SendBlocksTimeout          time.Duration
+	MaxSendBlocks              uint64
+	PeerDiscoveryInterval      time.Duration
+	SyncInterval               time.Duration
+	BanDuration                time.Duration
+	Logger                     *zap.Logger
+}
+
+func defaultConfig() config {
+	return config{
+		BootstrapMinPeers:          2,
+		BootstrapStability:         30 * time.Second,
+		SeedDNSRefresh:             5 * time.Minute,
+		Resolver:                   net.DefaultResolver,
+		Dialer:                     &net.Dialer{},
+		MaxInboundPeers:            64,
+		MaxOutboundPeers:           16,
+		MaxInflightRPCs:            64,
+		MaxInflightRPCsPerSubnet:   256,
+		InflightIPv4PrefixBits:     defaultInflightIPv4PrefixBits,
+		InflightIPv6PrefixBits:     defaultInflightIPv6PrefixBits,
+		ConnectTimeout:             10 * time.Second,
+		RPCTimeout:                 5 * time.Minute,
+		ShareNodesTimeout:          5 * time.Second,
+		SendBlockTimeout:           60 * time.Second,
+		SendTransactionsTimeout:    3 * time.Minute,
+		RelayHeaderTimeout:         5 * time.Second,
+		RelayBlockOutlineTimeout:   60 * time.Second,
+		RelayTransactionSetTimeout: 60 * time.Second,
+		SendHeadersTimeout:         30 * time.Second,
+		MaxSendHeaders:             10000,
+		SendBlocksTimeout:          120 * time.Second,
+		MaxSendBlocks:              100,
+		PeerDiscoveryInterval:      5 * time.Second,
+		SyncInterval:               5 * time.Second,
+		BanDuration:                24 * time.Hour,
+		Logger:                     zap.NewNop(),
+	}
+}
+
+// An Option modifies a Syncer's configuration.
+type Option func(*config)
+
+// WithDialer sets the Dialer used to dial network connections.
+func WithDialer(d Dialer) Option {
+	return func(c *config) {
+		c.Dialer = d
+	}
+}
+
+// WithMaxInboundPeers sets the maximum number of inbound connections. The
+// default is 8.
+func WithMaxInboundPeers(n int) Option {
+	return func(c *config) { c.MaxInboundPeers = n }
+}
+
+// WithMaxOutboundPeers sets the maximum number of outbound connections. The
+// default is 8.
+func WithMaxOutboundPeers(n int) Option {
+	return func(c *config) { c.MaxOutboundPeers = n }
+}
+
+// WithMaxInflightRPCs sets the maximum number of concurrent RPCs per peer. When
+// a peer reaches this limit, the syncer stops accepting new RPCs from it until
+// an in-flight one completes, i.e. it applies backpressure rather than dropping
+// RPCs. The default is 64.
+func WithMaxInflightRPCs(n int) Option {
+	return func(c *config) { c.MaxInflightRPCs = n }
+}
+
+// WithMaxInflightRPCsPerSubnet sets the maximum number of concurrent RPCs
+// permitted from a single remote subnet. Unlike the per-peer limit, RPCs that
+// exceed this limit are dropped (the stream is closed) rather than backpressured,
+// since a subnet over its budget is treated as abusive. A value <= 0 disables
+// the limit. The default is 64.
+func WithMaxInflightRPCsPerSubnet(n int) Option {
+	return func(c *config) { c.MaxInflightRPCsPerSubnet = n }
+}
+
+// WithInflightRPCSubnetPrefixes sets the prefix lengths used to group remote
+// addresses into subnets for WithMaxInflightRPCsPerSubnet. Valid prefix lengths
+// are 0-32 for IPv4 and 0-128 for IPv6; a value outside its range is ignored
+// and the default is used instead. The defaults are /32 (exact address) for
+// IPv4 and /48 for IPv6.
+func WithInflightRPCSubnetPrefixes(ipv4Bits, ipv6Bits int) Option {
+	return func(c *config) {
+		c.InflightIPv4PrefixBits = defaultInflightIPv4PrefixBits
+		if ipv4Bits >= 0 && ipv4Bits <= maxIPv4PrefixBits {
+			c.InflightIPv4PrefixBits = ipv4Bits
+		}
+		c.InflightIPv6PrefixBits = defaultInflightIPv6PrefixBits
+		if ipv6Bits >= 0 && ipv6Bits <= maxIPv6PrefixBits {
+			c.InflightIPv6PrefixBits = ipv6Bits
+		}
+	}
+}
+
+// WithConnectTimeout sets the timeout when connecting to a peer. The default is
+// 5 seconds.
+func WithConnectTimeout(d time.Duration) Option {
+	return func(c *config) { c.ConnectTimeout = d }
+}
+
+// WithRPCTimeout sets the timeout for all incoming RPCs. The default is 2 minutes.
+func WithRPCTimeout(d time.Duration) Option {
+	return func(c *config) { c.RPCTimeout = d }
+}
+
+// WithShareNodesTimeout sets the timeout for the ShareNodes RPC. The default is
+// 5 seconds.
+func WithShareNodesTimeout(d time.Duration) Option {
+	return func(c *config) { c.ShareNodesTimeout = d }
+}
+
+// WithSendBlockTimeout sets the timeout for the SendBlock RPC. The default is
+// 60 seconds.
+func WithSendBlockTimeout(d time.Duration) Option {
+	return func(c *config) { c.SendBlockTimeout = d }
+}
+
+// WithSendBlocksTimeout sets the timeout for the SendBlocks RPC. The default is
+// 120 seconds.
+func WithSendBlocksTimeout(d time.Duration) Option {
+	return func(c *config) { c.SendBlocksTimeout = d }
+}
+
+// WithMaxSendBlocks sets the maximum number of blocks requested per SendBlocks
+// RPC. The default is 100.
+func WithMaxSendBlocks(n uint64) Option {
+	return func(c *config) { c.MaxSendBlocks = n }
+}
+
+// WithSendTransactionsTimeout sets the timeout for the SendTransactions RPC.
+// The default is 60 seconds.
+func WithSendTransactionsTimeout(d time.Duration) Option {
+	return func(c *config) { c.SendTransactionsTimeout = d }
+}
+
+// WithRelayHeaderTimeout sets the timeout for the RelayHeader and RelayV2Header
+// RPCs. The default is 5 seconds.
+func WithRelayHeaderTimeout(d time.Duration) Option {
+	return func(c *config) { c.RelayHeaderTimeout = d }
+}
+
+// WithRelayBlockOutlineTimeout sets the timeout for the RelayV2BlockOutline
+// RPC. The default is 60 seconds.
+func WithRelayBlockOutlineTimeout(d time.Duration) Option {
+	return func(c *config) { c.RelayBlockOutlineTimeout = d }
+}
+
+// WithRelayTransactionSetTimeout sets the timeout for the RelayTransactionSet
+// RPC. The default is 60 seconds.
+func WithRelayTransactionSetTimeout(d time.Duration) Option {
+	return func(c *config) { c.RelayTransactionSetTimeout = d }
+}
+
+// WithPeerDiscoveryInterval sets the frequency at which the syncer attempts to
+// discover and connect to new peers. The default is 5 seconds.
+func WithPeerDiscoveryInterval(d time.Duration) Option {
+	return func(c *config) { c.PeerDiscoveryInterval = d }
+}
+
+// WithSyncInterval sets the frequency at which the syncer attempts to sync with
+// peers. The default is 5 seconds.
+func WithSyncInterval(d time.Duration) Option {
+	return func(c *config) { c.SyncInterval = d }
+}
+
+// WithBanDuration sets the duration for which a peer is banned when
+// misbehaving.
+func WithBanDuration(d time.Duration) Option {
+	return func(c *config) { c.BanDuration = d }
+}
+
+// WithLogger sets the logger used by a Syncer. The default is a logger that
+// outputs to io.Discard.
+func WithLogger(l *zap.Logger) Option {
+	return func(c *config) { c.Logger = l }
+}
+
+// A Dialer is responsible for dialing the Syncer's outgoing network
+// connections.
+type Dialer interface {
+	DialContext(ctx context.Context, network, address string) (net.Conn, error)
+}
+
+// A Syncer synchronizes blockchain data with peers.
+type Syncer struct {
+	d      Dialer
+	l      net.Listener
+	cm     ChainManager
+	pm     PeerStore
+	header gateway.Header
+	config config
+	log    *zap.Logger // redundant, but convenient
+
+	tg *threadgroup.ThreadGroup
+
+	mu            sync.Mutex
+	peerRemoved   sync.Cond // broadcasts when peer is removed from 'peers'
+	peers         map[string]*Peer
+	strikes       map[string]int
+	bootstrap     map[string]bool     // configured names and resolved IP:port aliases
+	serverPeers   map[string]bool     // persistent seed-server names and aliases
+	seedAddresses map[string][]string // latest successful DNS answers by name
+
+	inflightMu     sync.Mutex
+	inflightSubnet map[string]int // subnet key -> live inbound handler count
+}
+
+func (s *Syncer) resync(p *Peer, reason string) {
+	if p.Synced() {
+		p.setSynced(false)
+		s.log.Debug("resync triggered", zap.String("peer", p.t.Addr), zap.String("reason", reason))
+	}
+}
+
+func (s *Syncer) ban(p *Peer, err error) error {
+	s.log.Debug("banning peer", zap.Stringer("peer", p), zap.Error(err))
+	p.setErr(ErrPeerBanned)
+	if err := s.pm.Ban(p.ConnAddr, s.config.BanDuration, err.Error()); err != nil {
+		return fmt.Errorf("failed to ban peer: %w", err)
+	}
+
+	host, _, err := net.SplitHostPort(p.ConnAddr)
+	if err != nil {
+		return err
+	}
+	// add a strike to each subnet
+	for subnet, maxStrikes := range map[string]int{
+		Subnet(host, "/32"): 2,   // 1.2.3.4:*
+		Subnet(host, "/24"): 8,   // 1.2.3.*
+		Subnet(host, "/16"): 64,  // 1.2.*
+		Subnet(host, "/8"):  512, // 1.*
+	} {
+		s.mu.Lock()
+		ban := (s.strikes[subnet] + 1) >= maxStrikes
+		if ban {
+			delete(s.strikes, subnet)
+		} else {
+			s.strikes[subnet]++
+		}
+		s.mu.Unlock()
+		if !ban {
+			continue
+		} else if err := s.pm.Ban(subnet, s.config.BanDuration, "too many strikes"); err != nil {
+			return fmt.Errorf("failed to ban subnet %q: %w", subnet, err)
+		}
+	}
+	return nil
+}
+
+// addPeer adds a peer to the Syncer. If it returns without error it must be
+// passed to runPeer to ensure it gets removed.
+func (s *Syncer) addPeer(p *Peer) error {
+	if err := s.pm.AddPeer(p.t.Addr); err != nil {
+		return fmt.Errorf("failed to add peer: %w", err)
+	} else if err := s.pm.UpdatePeerInfo(p.t.Addr, func(info *PeerInfo) {
+		info.LastConnect = time.Now()
+	}); err != nil {
+		return fmt.Errorf("failed to update peer info: %w", err)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, existing := range s.peers {
+		if existing.Err() == nil && (existing.UniqueID() == p.UniqueID() || existing.Addr() == p.Addr()) {
+			return errors.New("already connected")
+		}
+	}
+	s.peers[p.t.Addr] = p
+	return nil
+}
+
+// subnetKey normalizes a connection's remote address to a subnet key in CIDR
+// notation (e.g. "192.168.1.0/24")
+func (s *Syncer) subnetKey(connAddr string) string {
+	host, _, err := net.SplitHostPort(connAddr)
+	if err != nil {
+		host = connAddr
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return ""
+	}
+	bits, size := s.config.InflightIPv6PrefixBits, 128
+	if v4 := ip.To4(); v4 != nil {
+		ip, bits, size = v4, s.config.InflightIPv4PrefixBits, 32
+	}
+	mask := net.CIDRMask(bits, size)
+	return (&net.IPNet{IP: ip.Mask(mask), Mask: mask}).String()
+}
+
+// acquireInflight reserves an inbound-RPC slot for the given subnet key,
+// returning false if the subnet is already at capacity. The slot is held for
+// the lifetime of the handler rather than the connection, so a peer cannot
+// obtain a fresh allowance by disconnecting and reconnecting.
+func (s *Syncer) acquireInflight(key string) bool {
+	if key == "" || s.config.MaxInflightRPCsPerSubnet <= 0 {
+		return true
+	}
+	s.inflightMu.Lock()
+	defer s.inflightMu.Unlock()
+	if s.inflightSubnet[key] >= s.config.MaxInflightRPCsPerSubnet {
+		return false
+	}
+	s.inflightSubnet[key]++
+	return true
+}
+
+// releaseInflight releases a slot previously reserved by acquireInflight.
+func (s *Syncer) releaseInflight(key string) {
+	if key == "" || s.config.MaxInflightRPCsPerSubnet <= 0 {
+		return
+	}
+	s.inflightMu.Lock()
+	defer s.inflightMu.Unlock()
+	if s.inflightSubnet[key]--; s.inflightSubnet[key] <= 0 {
+		delete(s.inflightSubnet, key)
+	}
+}
+
+func (s *Syncer) runPeer(p *Peer) {
+	defer func() {
+		s.mu.Lock()
+		if s.peers[p.t.Addr] == p {
+			delete(s.peers, p.t.Addr)
+		}
+		s.mu.Unlock()
+
+		// notify goroutines of removed peer
+		s.peerRemoved.Broadcast()
+	}()
+
+	done, err := s.tg.Add()
+	if err != nil {
+		return
+	}
+	defer done()
+
+	subnet := s.subnetKey(p.ConnAddr)
+	inflight := make(chan struct{}, s.config.MaxInflightRPCs)
+	for {
+		if p.Err() != nil {
+			return
+		}
+		id, stream, err := p.acceptRPC()
+		if err != nil {
+			p.setErr(err)
+			return
+		}
+		select {
+		case inflight <- struct{}{}:
+		case <-s.tg.Done():
+			return
+		}
+		// enforce the per-subnet in-flight cap; the slot is held until the
+		// handler completes, so reconnecting does not grant a fresh allowance.
+		if !s.acquireInflight(subnet) {
+			<-inflight
+			stream.Close()
+			s.log.Debug("rejected rpc: subnet in-flight limit reached", zap.Stringer("peer", p), zap.Stringer("rpc", id), zap.String("subnet", subnet), zap.Int("limit", s.config.MaxInflightRPCsPerSubnet))
+			continue
+		}
+
+		go func() {
+			defer func() { <-inflight }()
+			defer s.releaseInflight(subnet)
+
+			done, err := s.tg.Add()
+			if err != nil {
+				return
+			}
+			defer done()
+			defer stream.Close()
+			if err := stream.SetDeadline(time.Now().Add(s.config.RPCTimeout)); err != nil {
+				s.log.Debug("failed to set rpc deadline", zap.Error(err))
+			} else if err := s.handleRPC(id, stream, p); err != nil {
+				s.log.Debug("rpc failed", zap.Stringer("peer", p), zap.Stringer("rpc", id), zap.Error(err))
+			}
+		}()
+	}
+}
+
+// withPeers is a helper function that calls fn concurrently for all connected peers
+// except the origin peer. It returns nil if at least one call returns nil. If all calls
+// fail, it returns the first error encountered. If there are no peers, it returns [ErrNoPeers].
+//
+// The Syncer mutex will be locked while calling fn
+func (s *Syncer) withPeers(origin *Peer, fn func(p *Peer) error) error {
+	s.mu.Lock()
+	peers := slices.Collect(maps.Values(s.peers))
+	s.mu.Unlock()
+	var inflight int
+	errCh := make(chan error, len(peers))
+	for _, p := range peers {
+		if p == origin {
+			continue
+		}
+		inflight++
+		go func(p *Peer) {
+			done, err := s.tg.Add()
+			if err != nil {
+				errCh <- err
+				return
+			}
+			defer done()
+			errCh <- fn(p)
+		}(p)
+	}
+	if inflight == 0 {
+		return ErrNoPeers
+	}
+	var err error
+	for ; inflight > 0; inflight-- {
+		// block until at least one relay has succeeded
+		// or all relays have failed
+		peerErr := <-errCh
+		if peerErr == nil {
+			return nil
+		} else if err == nil {
+			err = peerErr // return the first error if all relays fail
+		}
+	}
+	return err
+}
+
+func (s *Syncer) relayV2Header(bh types.BlockHeader, origin *Peer) error {
+	return s.withPeers(origin, func(p *Peer) error { return p.RelayV2Header(bh, s.config.RelayHeaderTimeout) })
+}
+
+func (s *Syncer) relayV2BlockOutline(pb gateway.V2BlockOutline, origin *Peer) error {
+	return s.withPeers(origin, func(p *Peer) error { return p.RelayV2BlockOutline(pb, s.config.RelayBlockOutlineTimeout) })
+}
+
+func (s *Syncer) relayV2TransactionSet(index types.ChainIndex, txns []types.V2Transaction, origin *Peer) error {
+	if len(txns) == 0 {
+		return nil
+	}
+	return s.withPeers(origin, func(p *Peer) error { return p.RelayV2TransactionSet(index, txns, s.config.RelayTransactionSetTimeout) })
+}
+
+func (s *Syncer) allowConnect(ctx context.Context, peer string, inbound bool) error {
+	done, err := s.tg.Add()
+	if err != nil {
+		return err
+	}
+	defer done()
+
+	var addrs []net.IPAddr
+	if peerHost, _, err := net.SplitHostPort(peer); err != nil {
+		return fmt.Errorf("failed to split peer host and port: %w", err)
+	} else if addrs, err = s.lookupPeerIPs(ctx, peerHost); err != nil {
+		return fmt.Errorf("failed to resolve peer address: %w", err)
+	} else if len(addrs) == 0 {
+		return fmt.Errorf("peer didn't resolve to any addresses")
+	}
+	for _, addr := range addrs {
+		if banned, err := s.pm.Banned(addr.String()); err != nil {
+			return err
+		} else if banned {
+			return ErrPeerBanned
+		}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var in, out int
+	for _, p := range s.peers {
+		if p.Inbound {
+			in++
+		} else {
+			out++
+		}
+	}
+	// TODO: subnet-based limits
+	if inbound && in >= s.config.MaxInboundPeers {
+		return errors.New("too many inbound peers")
+	} else if !inbound && out >= s.config.MaxOutboundPeers {
+		return errors.New("too many outbound peers")
+	}
+	if s.config.SeedMode && !inbound {
+		ordinary, servers := 0, 0
+		for _, p := range s.peers {
+			if !p.Inbound && p.Err() == nil {
+				if s.serverPeers[p.Addr()] || s.serverPeers[p.dialAddr] {
+					servers++
+				} else {
+					ordinary++
+				}
+			}
+		}
+		if s.serverPeers[peer] && servers >= len(s.config.SeedPeers) {
+			return errors.New("seed server outbound slots are full")
+		} else if !s.serverPeers[peer] && ordinary >= 8 {
+			return errors.New("seed ordinary outbound slots are full")
+		}
+	}
+	return nil
+}
+
+func (s *Syncer) alreadyConnected(id gateway.UniqueID) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, p := range s.peers {
+		if p.t.UniqueID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Syncer) acceptLoop(ctx context.Context) error {
+	ctx, done, err := s.tg.AddContext(ctx)
+	if err != nil {
+		return err
+	}
+	defer done()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return threadgroup.ErrClosed
+		default:
+		}
+
+		conn, err := s.l.Accept()
+		if err != nil {
+			return err
+		}
+
+		go func() {
+			done, err := s.tg.Add()
+			if err != nil {
+				return
+			}
+			defer done()
+			defer conn.Close()
+			// set timeout for initial handshake
+			conn.SetDeadline(time.Now().Add(s.config.ConnectTimeout))
+			if err := s.allowConnect(ctx, conn.RemoteAddr().String(), true); err != nil {
+				s.log.Debug("rejected inbound connection", zap.Stringer("remoteAddress", conn.RemoteAddr()), zap.Error(err))
+				return
+			}
+
+			t, err := gateway.Accept(conn, s.header)
+			if err != nil || s.alreadyConnected(t.UniqueID) {
+				// note: most likely a timeout or other temp network error.
+				// logging is very noisy
+				return
+			}
+			conn.SetDeadline(time.Time{})
+			p := &Peer{
+				t:        t,
+				ConnAddr: conn.RemoteAddr().String(),
+				Inbound:  true,
+			}
+			if err := s.addPeer(p); err != nil {
+				s.log.Debug("failed to add peer", zap.Stringer("remoteAddress", conn.RemoteAddr()), zap.Error(err))
+				return
+			}
+			s.runPeer(p)
+		}()
+	}
+}
+
+func (s *Syncer) peerLoop(ctx context.Context) error {
+	if len(s.config.BootstrapPeers) != 0 {
+		return s.bootstrapPeerLoop(ctx)
+	}
+	log := s.log.Named("peerLoop")
+	numOutbound := func() (n int) {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		for _, p := range s.peers {
+			if !p.Inbound {
+				n++
+			}
+		}
+		return
+	}
+
+	lastTried := make(map[string]time.Time)
+	var nextResolve time.Time
+	peersForConnect := func() (peers []string) {
+		p, err := s.pm.Peers()
+		if err != nil {
+			log.Error("failed to fetch peers", zap.Error(err))
+			return
+		}
+		serverCandidates := s.seedCandidates(s.config.SeedPeers)
+
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		active := make(map[string]bool)
+		for _, peer := range s.peers {
+			if peer.Err() == nil {
+				active[peer.Addr()], active[peer.dialAddr] = true, true
+			}
+		}
+		for _, p := range p {
+			if err := validatePeer(p.Address); err != nil {
+				log.Debug("ignoring invalid peer address", zap.String("peer", p.Address), zap.Error(err))
+				continue
+			}
+			if s.config.SeedMode && s.serverPeers[p.Address] {
+				continue // only current DNS answers are dialed as server peers
+			}
+			if !active[p.Address] && time.Since(lastTried[p.Address]) > 5*time.Minute {
+				peers = append(peers, p.Address)
+			}
+		}
+		for _, addr := range serverCandidates {
+			if !active[addr] && time.Since(lastTried[addr]) > 30*time.Second {
+				peers = append(peers, addr)
+			}
+		}
+		// TODO: weighted random selection?
+		frand.Shuffle(len(peers), func(i, j int) {
+			peers[i], peers[j] = peers[j], peers[i]
+		})
+		if s.config.SeedMode {
+			slices.SortStableFunc(peers, func(a, b string) int {
+				pa, pb := s.serverPeers[a], s.serverPeers[b]
+				if pa == pb {
+					return 0
+				}
+				if pa {
+					return -1
+				}
+				return 1
+			})
+		}
+		return peers
+	}
+	discoverPeers := func() {
+		// try up to three randomly-chosen peers
+		var peers []*Peer
+		s.mu.Lock()
+		for _, p := range s.peers {
+			if peers = append(peers, p); len(peers) >= 3 {
+				break
+			}
+		}
+		s.mu.Unlock()
+		for _, p := range peers {
+			nodes, err := p.ShareNodes(s.config.ShareNodesTimeout)
+			if err != nil {
+				continue
+			}
+			for _, n := range nodes {
+				if err := validatePeer(n); err != nil {
+					log.Debug("ignoring invalid peer address", zap.String("peer", n), zap.Error(err))
+					continue
+				} else if err := s.pm.AddPeer(n); err != nil {
+					log.Debug("failed to add peer", zap.String("peer", n), zap.Error(err))
+				}
+			}
+		}
+	}
+
+	ticker := time.NewTicker(s.config.PeerDiscoveryInterval)
+	defer ticker.Stop()
+	sleep := func() bool {
+		select {
+		case <-ticker.C:
+			return true
+		case <-ctx.Done():
+			return false
+		}
+	}
+	for fst := true; fst || sleep(); fst = false {
+		select {
+		case <-ctx.Done():
+			return nil // avoid spamming "failed to connect" after context is cancelled
+		default:
+		}
+		if s.config.SeedMode && !time.Now().Before(nextResolve) {
+			nextResolve = s.refreshSeedAddresses(ctx)
+		}
+
+		if numOutbound() >= s.config.MaxOutboundPeers {
+			continue
+		}
+		candidates := peersForConnect()
+		if len(candidates) == 0 {
+			log.Debug("no peers to connect to")
+			discoverPeers()
+			continue
+		}
+		for _, p := range candidates {
+			if numOutbound() >= s.config.MaxOutboundPeers {
+				break
+			} else if err := s.allowConnect(ctx, p, false); err != nil {
+				log.Debug("rejected outbound peer", zap.String("peer", p), zap.Error(err))
+				continue
+			}
+
+			ctx, cancel := context.WithTimeout(ctx, s.config.ConnectTimeout)
+			s.Connect(ctx, p)
+			cancel()
+			lastTried[p] = time.Now()
+		}
+	}
+	return nil
+}
+
+func (s *Syncer) syncLoop(ctx context.Context) error {
+	ticker := time.NewTicker(s.config.SyncInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil // note: context cancelled is not an error
+		case <-ticker.C:
+		}
+
+		// fetch headers from each unsynced peer
+		s.mu.Lock()
+		var peers []*Peer
+		for _, p := range s.peers {
+			if p.Err() == nil && !p.Synced() {
+				peers = append(peers, p)
+			}
+		}
+		s.mu.Unlock()
+		type resp struct {
+			peer      *Peer
+			cs        consensus.State
+			headers   []types.BlockHeader
+			remaining uint64
+			err       error
+		}
+		respChan := make(chan resp, len(peers))
+		hist, err := s.cm.History()
+		if err != nil {
+			return err // generally fatal
+		}
+		for _, p := range peers {
+			go func(p *Peer) {
+				cs, headers, remaining, err := func() (consensus.State, []types.BlockHeader, uint64, error) {
+					for _, id := range hist {
+						if id == (types.BlockID{}) {
+							// skip empty history entries which can occur when
+							// we don't have a full history of blocks.
+							continue
+						}
+						cs, ok := s.cm.State(id)
+						if !ok {
+							return consensus.State{}, nil, 0, errors.New("missing state for history")
+						}
+						headers, remaining, err := p.SendHeaders(cs, s.config.MaxSendHeaders, s.config.SendHeadersTimeout)
+						if err != nil && strings.Contains(err.Error(), "EOF") {
+							continue // probably "index is not on our best chain"
+						} else if err != nil {
+							return consensus.State{}, nil, 0, err
+						}
+						return cs, headers, remaining, nil
+					}
+					return consensus.State{}, nil, 0, errors.New("no common history")
+				}()
+				respChan <- resp{peer: p, cs: cs, headers: headers, remaining: remaining, err: err}
+			}(p)
+		}
+		// sync each set of headers as they arrive
+		seen := make(map[types.BlockID]bool)
+		for range peers {
+			if r := <-respChan; r.err != nil {
+				r.peer.setErr(r.err)
+			} else if len(r.headers) == 0 {
+				r.peer.setSynced(true)
+			} else if id := r.headers[len(r.headers)-1].ID(); seen[id] {
+				continue // already syncing these blocks from another peer
+			} else {
+				seen[id] = true
+				s.log.Debug("syncing blocks", zap.Stringer("peer", r.peer), zap.Stringer("start", r.cs.Index), zap.Int("n", len(r.headers)))
+				if err := s.parallelSync(ctx, r.cs, r.headers); err != nil {
+					s.log.Debug("sync failed", zap.Stringer("peer", r.peer), zap.Error(err))
+				} else if r.remaining == 0 {
+					// peer sent all their headers; mark them as synced and
+					// relay their tip
+					r.peer.setSynced(true)
+					go s.relayV2Header(r.headers[len(r.headers)-1], r.peer)
+				}
+			}
+		}
+	}
+}
+
+// Run spawns goroutines for accepting inbound connections, forming outbound
+// connections, and syncing the blockchain from active peers. It blocks until an
+// error occurs, upon which all connections are closed and goroutines are
+// terminated.
+func (s *Syncer) Run() error {
+	ctx, done, err := s.tg.AddContext(context.Background())
+	if err != nil {
+		return err
+	}
+	defer done()
+
+	errChan := make(chan error)
+	for _, fn := range []func(context.Context) error{s.acceptLoop, s.peerLoop, s.syncLoop} {
+		go func() {
+			done, err := s.tg.Add()
+			if err != nil {
+				errChan <- err
+				return
+			}
+			errChan <- fn(ctx)
+			done()
+		}()
+	}
+	err = <-errChan
+
+	// when one goroutine exits, shutdown and wait for the others
+	s.l.Close()
+	s.mu.Lock()
+	for _, p := range s.peers {
+		p.Close()
+	}
+	s.mu.Unlock()
+	<-errChan
+	<-errChan
+
+	// wait for all peer goroutines to exit
+	s.mu.Lock()
+	for len(s.peers) != 0 {
+		s.peerRemoved.Wait()
+	}
+	s.mu.Unlock()
+
+	if errors.Is(err, net.ErrClosed) {
+		return nil // graceful shutdown
+	}
+	return err
+}
+
+// Close closes the Syncer's net.Listener.
+func (s *Syncer) Close() error {
+	err := s.l.Close()
+	s.tg.Stop()
+	return err
+}
+
+// Connect forms an outbound connection to a peer.
+func (s *Syncer) Connect(ctx context.Context, addr string) (*Peer, error) {
+	ctx, done, err := s.tg.AddContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer done()
+
+	conn, err := s.d.DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+	deadline := time.Now().Add(s.config.ConnectTimeout)
+	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
+		deadline = d
+	}
+	conn.SetDeadline(deadline)
+	defer conn.SetDeadline(time.Time{})
+	t, err := gateway.Dial(conn, s.header)
+	if err != nil {
+		conn.Close()
+		return nil, err
+	} else if s.alreadyConnected(t.UniqueID) {
+		conn.Close()
+		return nil, errors.New("already connected")
+	}
+	p := &Peer{
+		t:        t,
+		ConnAddr: conn.RemoteAddr().String(),
+		Inbound:  false,
+		dialAddr: addr,
+	}
+	if err := s.addPeer(p); err != nil {
+		p.Close()
+		return nil, fmt.Errorf("failed to add peer: %w", err)
+	}
+
+	go s.runPeer(p)
+	return p, nil
+}
+
+// BroadcastV2Header broadcasts a v2 header to all peers.
+func (s *Syncer) BroadcastV2Header(bh types.BlockHeader) error {
+	return s.relayV2Header(bh, nil)
+}
+
+// BroadcastV2BlockOutline broadcasts a v2 block outline to all peers.
+func (s *Syncer) BroadcastV2BlockOutline(b gateway.V2BlockOutline) error {
+	return s.relayV2BlockOutline(b, nil)
+}
+
+// BroadcastV2TransactionSet broadcasts a v2 transaction set to all peers.
+func (s *Syncer) BroadcastV2TransactionSet(index types.ChainIndex, txns []types.V2Transaction) error {
+	return s.relayV2TransactionSet(index, txns, nil)
+}
+
+// Peers returns the set of currently-connected peers.
+func (s *Syncer) Peers() []*Peer {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var peers []*Peer
+	for _, p := range s.peers {
+		peers = append(peers, p)
+	}
+	return peers
+}
+
+// PeerInfo returns the metadata for the specified peer or ErrPeerNotFound if
+// the peer wasn't found in the store.
+func (s *Syncer) PeerInfo(addr string) (PeerInfo, error) {
+	return s.pm.PeerInfo(addr)
+}
+
+// RememberPeer saves an address for ordinary peer discovery, including after a
+// restart. Connecting immediately is a separate operation.
+func (s *Syncer) RememberPeer(addr string) error {
+	if _, err := s.pm.PeerInfo(addr); err == nil {
+		return nil
+	} else if !errors.Is(err, ErrPeerNotFound) {
+		return err
+	}
+	return s.pm.AddPeer(addr)
+}
+
+// Addr returns the address of the Syncer.
+func (s *Syncer) Addr() string {
+	return s.l.Addr().String()
+}
+
+// New returns a new Syncer.
+func New(l net.Listener, cm ChainManager, pm PeerStore, header gateway.Header, opts ...Option) *Syncer {
+	config := defaultConfig()
+	for _, opt := range opts {
+		opt(&config)
+	}
+	if cm.TipState().Network.Qday != nil {
+		header.ProtocolMagic = gateway.QdayMagic()
+	}
+	s := &Syncer{
+		d:             config.Dialer,
+		l:             l,
+		cm:            cm,
+		pm:            pm,
+		header:        header,
+		config:        config,
+		log:           config.Logger,
+		peers:         make(map[string]*Peer),
+		strikes:       make(map[string]int),
+		bootstrap:     make(map[string]bool),
+		serverPeers:   make(map[string]bool),
+		seedAddresses: make(map[string][]string),
+		tg:            threadgroup.New(),
+
+		inflightSubnet: make(map[string]int),
+	}
+	for _, addr := range config.BootstrapPeers {
+		s.bootstrap[addr] = true
+	}
+	for _, addr := range config.SeedPeers {
+		s.serverPeers[addr] = true
+	}
+	s.peerRemoved = sync.Cond{L: &s.mu}
+	return s
+}
+
+// RetrieveCheckpoint attempts to retrieve a checkpoint block and state from one of the
+// specified peers. The first successful response is returned.
+func RetrieveCheckpoint(ctx context.Context, peers []string, index types.ChainIndex, n *consensus.Network, genesisID types.BlockID) (consensus.State, types.Block, error) {
+	if len(peers) == 0 {
+		return consensus.State{}, types.Block{}, errors.New("no peers provided")
+	}
+
+	type resp struct {
+		state consensus.State
+		block types.Block
+		err   error
+	}
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	resultCh := make(chan resp, 1)
+	go func() {
+		sema := make(chan struct{}, 5) // limit concurrent dials
+		for _, addr := range peers {
+			select {
+			case sema <- struct{}{}:
+			case <-ctx.Done():
+				return
+			}
+			go func(ctx context.Context, addr string) {
+				defer func() { <-sema }()
+
+				sendResult := func(r resp) {
+					select {
+					case <-ctx.Done():
+						// another goroutine succeeded
+					case resultCh <- r:
+					}
+				}
+
+				// NOTE: we don't use the syncer's dialer here since this
+				// operation is only performed once before creating the syncer.
+				conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", addr)
+				if err != nil {
+					sendResult(resp{err: err})
+					return
+				}
+				defer conn.Close()
+
+				ctx, cancel := context.WithCancel(ctx) // cancels the cleanup goroutine if the RPC fails or completes
+				defer cancel()
+				go func() {
+					<-ctx.Done()
+					// interrupt dial or RPC by forcing the connection to close
+					conn.Close()
+				}()
+				header := gateway.Header{
+					GenesisID:  genesisID,
+					UniqueID:   gateway.GenerateUniqueID(),
+					NetAddress: "ephemeral:0",
+				}
+				if n.Qday != nil {
+					header.ProtocolMagic = gateway.QdayMagic()
+				}
+				t, err := gateway.Dial(conn, header)
+				if err != nil {
+					sendResult(resp{err: err})
+					return
+				}
+				p := &Peer{
+					t:        t,
+					ConnAddr: conn.RemoteAddr().String(),
+					Inbound:  false,
+				}
+				cs, b, err := p.SendCheckpoint(index, n, 30*time.Second)
+				sendResult(resp{state: cs, block: b, err: err})
+			}(ctx, addr)
+		}
+	}()
+
+	for range peers {
+		select {
+		case r := <-resultCh:
+			if r.err == nil {
+				return r.state, r.block, nil
+			}
+		case <-ctx.Done():
+			return consensus.State{}, types.Block{}, ctx.Err()
+		}
+	}
+	return consensus.State{}, types.Block{}, errors.New("failed to retrieve checkpoint from any peer")
+}

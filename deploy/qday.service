@@ -1,0 +1,24 @@
+[Unit]
+Description=QDAY blockchain node
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+StateDirectory=qday-mainnet-d71aebcb687c
+StateDirectoryMode=0700
+UMask=0077
+EnvironmentFile=/etc/qday/qday.env
+ExecStart=/usr/local/bin/qday --network /etc/qday/qday-mainnet.json --data /var/lib/qday-mainnet-d71aebcb687c --http 127.0.0.1:19770 --p2p :19771 --seed-node --upnp=false --advertise ${QDAY_ADVERTISE} --peers ${QDAY_PEERS}
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectHome=yes
+ProtectSystem=strict
+
+[Install]
+WantedBy=multi-user.target

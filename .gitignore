@@ -1,0 +1,33 @@
+# Private credentials and local state
+/here.txt
+/.private/
+/.env
+/.env.*
+*.key
+api.token
+node.json
+p2p.json
+
+# Generated output and local toolchains
+/build/
+/.tools/
+/.vscode/
+/__pycache__/
+**/__pycache__/
+*.py[cod]
+/coverage/
+coverage.*
+
+# Runtime databases and logs
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.log
+*.pid
+
+# Editor and operating system files
+.DS_Store
+Thumbs.db
+*~
+*.swp

@@ -1,0 +1,684 @@
+package qday
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"math/big"
+	"os"
+	"path/filepath"
+	"runtime"
+	"sort"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"go.sia.tech/core/consensus"
+	"go.sia.tech/core/gateway"
+	"go.sia.tech/core/types"
+	"go.sia.tech/coreutils/chain"
+	mining "go.sia.tech/coreutils/qday"
+	"go.sia.tech/coreutils/syncer"
+	seedwallet "go.sia.tech/coreutils/wallet"
+	"go.sia.tech/walletd/v2/internal/portmap"
+	"go.sia.tech/walletd/v2/wallet"
+)
+
+// Service owns the local wallet and explicit CPU activity. Secret backups
+// require creation or an explicit, password-authenticated recovery request.
+type Service struct {
+	CM               *chain.Manager
+	WM               *wallet.Manager
+	Syncer           *syncer.Syncer
+	PortMapping      *portmap.Manager
+	RestartEnabled   bool
+	Manifest         chain.QdayManifest
+	path             string
+	ctx              context.Context
+	cancel           context.CancelFunc
+	mu               sync.Mutex
+	control          sync.Mutex
+	op               sync.Mutex
+	keys             *types.QdayPrivateKeys
+	public           types.QdayAddress
+	walletID         wallet.ID
+	runCancel        context.CancelFunc
+	runDone          chan struct{}
+	mode             string
+	threads          int
+	started          time.Time
+	lastError        string
+	hashes           atomic.Uint64
+	blocks           atomic.Uint64
+	restartRequested atomic.Bool
+	browser          browserSessions
+}
+
+func NewService(ctx context.Context, dir string, cm *chain.Manager, wm *wallet.Manager, sy *syncer.Syncer, manifest chain.QdayManifest) (*Service, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	s := &Service{CM: cm, WM: wm, Syncer: sy, Manifest: manifest, path: filepath.Join(dir, "wallet.key"), ctx: ctx, cancel: cancel, mode: "STOP"}
+	if k, err := readKey(s.path); err == nil {
+		s.public, err = types.ParseQdayAddress(k.Address)
+		if err != nil {
+			cancel()
+			return nil, err
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		cancel()
+		return nil, err
+	}
+	return s, nil
+}
+
+func (s *Service) setError(err error) {
+	if s.Manifest.Development && errors.Is(err, syncer.ErrNoPeers) {
+		return
+	}
+	if err != nil {
+		s.mu.Lock()
+		s.lastError = err.Error()
+		s.mu.Unlock()
+	}
+}
+
+func (s *Service) registerWallet(public types.QdayKeys) (wallet.ID, error) {
+	ws, err := s.WM.Wallets()
+	if err != nil {
+		return 0, err
+	}
+	var w wallet.Wallet
+	if len(ws) == 0 {
+		w, err = s.WM.AddWallet(wallet.Wallet{Name: "QDAY"})
+		if err != nil {
+			return 0, err
+		}
+	} else {
+		w = ws[0]
+	}
+	policy := public.Policy()
+	if err = s.WM.AddAddresses(w.ID, wallet.Address{Address: policy.Address(), SpendPolicy: &policy}); err != nil {
+		return 0, err
+	}
+	// Full indexing makes restoration independent of when an address is added.
+	// Reapplying history to existing personal proofs would corrupt that index.
+	if s.WM.IndexMode() != wallet.IndexModeFull {
+		return 0, errors.New("native QDAY wallet requires full indexing")
+	}
+	return w.ID, nil
+}
+
+func (s *Service) attach(ctx context.Context, keys *types.QdayPrivateKeys) error {
+	id, err := s.registerWallet(keys.Public)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.keys = keys
+	s.public = keys.Public.Address()
+	s.walletID = id
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *Service) Create(ctx context.Context, password, phrase string) (string, error) {
+	var seed [32]byte
+	var err error
+	if phrase == "" {
+		seed = seedwallet.NewQdaySeed()
+	} else {
+		seed, err = seedwallet.QdaySeedFromPhrase(phrase)
+		if err != nil {
+			return "", err
+		}
+	}
+	defer clear(seed[:])
+	return s.createSeed(ctx, password, seed)
+}
+
+func (s *Service) createSeed(ctx context.Context, password string, seed [32]byte) (string, error) {
+	s.op.Lock()
+	defer s.op.Unlock()
+	defer clear(seed[:])
+	if _, err := os.Stat(s.path); !errors.Is(err, os.ErrNotExist) {
+		return "", errors.New("a wallet already exists in this data directory")
+	}
+	keys, err := types.QdayKeysFromSeed(seed)
+	if err != nil {
+		return "", err
+	}
+	if err = WriteKey(s.path, password, seed, keys.Public); err != nil {
+		return "", err
+	}
+	if err = s.attach(ctx, &keys); err != nil {
+		return "", err
+	}
+	return seedwallet.QdaySeedPhrase(seed), nil
+}
+
+func (s *Service) Unlock(ctx context.Context, password string) error {
+	s.op.Lock()
+	defer s.op.Unlock()
+	seed, err := ReadKey(s.path, password)
+	if err != nil {
+		return err
+	}
+	defer clear(seed[:])
+	keys, err := types.QdayKeysFromSeed(seed)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	expected := s.public
+	s.mu.Unlock()
+	if keys.Public.Address() != expected {
+		return errors.New("keystore address mismatch")
+	}
+	return s.attach(ctx, &keys)
+}
+
+// Recovery requires the disk-encryption passphrase even when signing is
+// unlocked, allowing the owner to verify a backup after a failed initial UI.
+func (s *Service) Recovery(password string) (string, error) {
+	s.op.Lock()
+	defer s.op.Unlock()
+	seed, err := ReadKey(s.path, password)
+	if err != nil {
+		return "", err
+	}
+	defer clear(seed[:])
+	return seedwallet.QdaySeedPhrase(seed), nil
+}
+
+func (s *Service) Stop() {
+	s.control.Lock()
+	defer s.control.Unlock()
+	s.stop()
+}
+
+func (s *Service) stop() {
+	s.mu.Lock()
+	cancel, done := s.runCancel, s.runDone
+	s.runCancel = nil
+	s.runDone = nil
+	s.mode = "STOP"
+	s.mu.Unlock()
+	if cancel != nil {
+		cancel()
+		<-done
+	}
+	s.mu.Lock()
+	s.mode = "STOP"
+	s.mu.Unlock()
+}
+
+func (s *Service) Lock() {
+	s.control.Lock()
+	defer s.control.Unlock()
+	s.stop()
+	s.op.Lock()
+	defer s.op.Unlock()
+	s.mu.Lock()
+	if s.keys != nil {
+		clear(s.keys.Classical)
+		*s.keys = types.QdayPrivateKeys{}
+	}
+	s.keys = nil
+	s.mu.Unlock()
+}
+func (s *Service) Close() { s.cancel(); s.Lock() }
+
+// Done signals an authenticated request to quit the local application.
+func (s *Service) Done() <-chan struct{} { return s.ctx.Done() }
+
+// RequestRestart is available only when the desktop launcher supervises this node.
+func (s *Service) RequestRestart() error {
+	if !s.RestartEnabled {
+		return errors.New("restart is managed by the desktop launcher; restart this standalone node using its process manager")
+	}
+	s.restartRequested.Store(true)
+	return nil
+}
+
+func (s *Service) RestartRequested() bool { return s.restartRequested.Load() }
+
+func (s *Service) networkSynced() bool {
+	if s.Manifest.Development {
+		return true
+	}
+	if s.Syncer != nil {
+		for _, p := range s.Syncer.Peers() {
+			if p.Synced() && p.Err() == nil {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (s *Service) Start(threads int) error {
+	s.control.Lock()
+	defer s.control.Unlock()
+	if threads < 1 || threads > min(runtime.NumCPU(), 256) {
+		return fmt.Errorf("choose between 1 and %d CPU threads", min(runtime.NumCPU(), 256))
+	}
+	s.stop()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.keys == nil {
+		return errors.New("unlock your wallet first")
+	}
+	if !s.networkSynced() {
+		return errors.New("waiting for synchronization with a network peer")
+	}
+	if time.Now().Before(s.Manifest.Genesis.Timestamp) {
+		return errors.New("waiting for the genesis start time")
+	}
+	ctx, cancel := context.WithCancel(s.ctx)
+	done := make(chan struct{})
+	s.runCancel = cancel
+	s.runDone = done
+	s.mode = "MINE"
+	s.threads = threads
+	s.started = time.Now()
+	s.hashes.Store(0)
+	s.lastError = ""
+	go s.run(ctx, done, threads, s.keys.Public)
+	return nil
+}
+
+func (s *Service) run(ctx context.Context, done chan struct{}, threads int, pub types.QdayKeys) {
+	defer close(done)
+	defendDone := make(chan struct{})
+	go func() {
+		defer close(defendDone)
+		ticker := time.NewTicker(2 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if s.CM.TipState().QdayActive(s.CM.Tip().Height + 1) {
+					if _, err := s.Transfer(ctx, types.QdayAddress{}, types.ZeroCurrency, true); err != nil && !errors.Is(err, errNothingToDefend) && !errors.Is(err, errWalletSyncing) && !errors.Is(err, context.Canceled) {
+						s.setError(err)
+					}
+				}
+			}
+		}
+	}()
+	defer func() { <-defendDone }()
+	for ctx.Err() == nil {
+		cs := s.CM.TipState()
+		s.mu.Lock()
+		if cs.QdayActive(cs.Index.Height + 1) {
+			s.mode = "DEFEND"
+		} else {
+			s.mode = "MINE"
+		}
+		s.mu.Unlock()
+		if !s.networkSynced() {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(time.Second):
+				continue
+			}
+		}
+		b := mining.Candidate(cs, pub, s.CM.V2PoolTransactions(), types.CurrentTimestamp())
+		if s.CM.Tip() != cs.Index {
+			continue
+		}
+		attempt, cancel := context.WithTimeout(ctx, time.Second)
+		b, err := mining.Mine(attempt, cs, b, threads, &s.hashes)
+		cancel()
+		if err != nil {
+			continue
+		}
+		if s.CM.Tip() != cs.Index {
+			continue
+		}
+		if err = s.CM.AddBlocks([]types.Block{b}); err != nil {
+			s.setError(err)
+			continue
+		}
+		s.blocks.Add(1)
+		if s.Syncer != nil {
+			s.setError(s.Syncer.BroadcastV2Header(b.Header()))
+			s.setError(s.Syncer.BroadcastV2BlockOutline(gateway.OutlineBlock(b, nil, nil)))
+		}
+		if s.Manifest.Development {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(time.Second):
+			}
+		}
+	}
+}
+
+var errNothingToDefend = errors.New("no outputs need DEFEND yet")
+var errWalletSyncing = errors.New("wallet is synchronizing; retry shortly")
+
+// outputs returns a consistent, paginated snapshot and excludes spends already
+// in the mempool. No fixed first-page balance or selection limit hides coins.
+func (s *Service) outputs(cs consensus.State, pub types.QdayAddress) ([]wallet.UnspentSiacoinElement, error) {
+	spent := make(map[types.SiacoinOutputID]bool)
+	for _, txn := range s.CM.V2PoolTransactions() {
+		for _, in := range txn.SiacoinInputs {
+			spent[in.Parent.ID] = true
+		}
+	}
+	var result []wallet.UnspentSiacoinElement
+	for offset := 0; ; offset += 500 {
+		page, basis, err := s.WM.AddressSiacoinOutputs(types.Address(pub), false, offset, 500)
+		if err != nil {
+			return nil, err
+		}
+		if basis != cs.Index {
+			return nil, errWalletSyncing
+		}
+		for _, e := range page {
+			if !spent[e.ID] {
+				result = append(result, e)
+			}
+		}
+		if len(page) < 500 {
+			break
+		}
+	}
+	if s.CM.Tip() != cs.Index {
+		return nil, errWalletSyncing
+	}
+	return result, nil
+}
+
+// Transfer renews shields by spending to self. Burned input value cannot be
+// reintroduced as change or a miner fee. A small fee is paid for inclusion.
+func (s *Service) Transfer(ctx context.Context, to types.QdayAddress, amount types.Currency, defend bool) (types.TransactionID, error) {
+	return s.submit(ctx, to, amount, defend, nil)
+}
+
+// PublishProof funds and signs the proof before relaying it through the same
+// transaction pool and P2P path as an ordinary transfer.
+func (s *Service) PublishProof(ctx context.Context, witness [32]byte) (types.TransactionID, error) {
+	return s.submit(ctx, types.QdayAddress{}, types.ZeroCurrency, false, &witness)
+}
+
+func (s *Service) submit(ctx context.Context, to types.QdayAddress, amount types.Currency, defend bool, witness *[32]byte) (types.TransactionID, error) {
+	return s.submitFor(ctx, "", to, amount, defend, witness)
+}
+
+// Browser reviews name their source wallet so an import in another tab cannot
+// silently change which wallet pays for the reviewed transaction.
+func (s *Service) submitFor(ctx context.Context, from string, to types.QdayAddress, amount types.Currency, defend bool, witness *[32]byte) (types.TransactionID, error) {
+	s.op.Lock()
+	defer s.op.Unlock()
+	s.mu.Lock()
+	keys := s.keys
+	s.mu.Unlock()
+	if keys == nil {
+		return types.TransactionID{}, errors.New("unlock your wallet first")
+	}
+	if from != "" && from != keys.Public.String() {
+		return types.TransactionID{}, errors.New("the active wallet changed; review the transaction again")
+	}
+	cs := s.CM.TipState()
+	if witness != nil {
+		if cs.QdayHeight != 0 {
+			return types.TransactionID{}, errors.New("a QDAY proof is already confirmed")
+		}
+		if !consensus.VerifyQdayProof(cs.Network.Qday.Canary, *witness) {
+			return types.TransactionID{}, errors.New("solution does not solve this network's challenge")
+		}
+		if s.pendingProof() != "" {
+			return types.TransactionID{}, errors.New("a QDAY proof is already in the local mempool")
+		}
+	}
+	outs, err := s.outputs(cs, keys.Public.Address())
+	if err != nil {
+		return types.TransactionID{}, err
+	}
+	sort.Slice(outs, func(i, j int) bool { return outs[i].MaturityHeight < outs[j].MaturityHeight })
+	fee := types.HastingsPerSiacoin.Div64(1000)
+	if witness != nil {
+		fee = cs.Network.Qday.ProofFee
+	}
+	required, overflow := amount.AddWithOverflow(fee)
+	if overflow {
+		return types.TransactionID{}, errors.New("amount plus fee overflows")
+	}
+	var total types.Currency
+	txn := types.V2Transaction{MinerFee: fee}
+	for _, out := range outs {
+		v := cs.QdayValue(out.SiacoinElement, cs.Index.Height+2)
+		if v.IsZero() {
+			continue
+		}
+		if defend {
+			if !cs.QdayActive(cs.Index.Height + 1) {
+				return types.TransactionID{}, errNothingToDefend
+			}
+			start := max(out.MaturityHeight, cs.QdayHeight)
+			if cs.Index.Height+max(uint64(2), cs.Network.Qday.ShieldBlocks/4) < start+cs.Network.Qday.ShieldBlocks {
+				continue
+			}
+		}
+		total = total.Add(v)
+		txn.SiacoinInputs = append(txn.SiacoinInputs, types.V2SiacoinInput{Parent: out.SiacoinElement, SatisfiedPolicy: types.SatisfiedPolicy{Policy: keys.Public.Policy()}})
+		if len(txn.SiacoinInputs) == 64 || (!defend && total.Cmp(required) >= 0) {
+			break
+		}
+	}
+	var envelope consensus.QdayEnvelope
+	envelope.Kind = consensus.QdayTransfer
+	if witness != nil {
+		if total.Cmp(fee) < 0 {
+			return types.TransactionID{}, errors.New("insufficient confirmed balance to pay the proof fee")
+		}
+		envelope.Kind = consensus.QdayCanaryProof
+		envelope.Witness = *witness
+		if change := total.Sub(fee); !change.IsZero() {
+			txn.SiacoinOutputs = []types.SiacoinOutput{{Value: change, Address: keys.Public.Policy().Address()}}
+		}
+	} else if defend {
+		if total.Cmp(fee) <= 0 {
+			return types.TransactionID{}, errNothingToDefend
+		}
+		txn.SiacoinOutputs = []types.SiacoinOutput{{Value: total.Sub(fee), Address: keys.Public.Policy().Address()}}
+	} else {
+		if err = to.Validate(); err != nil {
+			return types.TransactionID{}, err
+		}
+		if amount.IsZero() {
+			return types.TransactionID{}, errors.New("amount must be positive")
+		}
+		if total.Cmp(required) < 0 {
+			return types.TransactionID{}, errors.New("insufficient confirmed spendable balance (including fee); at most 64 inputs per send")
+		}
+		txn.SiacoinOutputs = []types.SiacoinOutput{{Value: amount, Address: types.Address(to)}}
+		if change := total.Sub(amount).Sub(fee); !change.IsZero() {
+			txn.SiacoinOutputs = append(txn.SiacoinOutputs, types.SiacoinOutput{Value: change, Address: keys.Public.Policy().Address()})
+		}
+	}
+	txn.ArbitraryData = envelope.Encode()
+	if err = mining.SignTransfer(ctx, cs, &txn, keys); err != nil {
+		return types.TransactionID{}, err
+	}
+	select {
+	case <-ctx.Done():
+		return types.TransactionID{}, ctx.Err()
+	default:
+	}
+	// Accumulator proofs may advance during signing; update them before relay.
+	basis := s.CM.Tip()
+	txns, err := s.CM.UpdateV2TransactionSet([]types.V2Transaction{txn}, cs.Index, basis)
+	if err != nil {
+		return types.TransactionID{}, err
+	}
+	if _, err = s.CM.AddV2PoolTransactions(basis, txns); err != nil {
+		return types.TransactionID{}, err
+	}
+	if s.Syncer != nil {
+		s.setError(s.Syncer.BroadcastV2TransactionSet(basis, txns))
+	}
+	return txn.ID(), nil
+}
+
+func (s *Service) pendingProof() string {
+	for _, txn := range s.CM.V2PoolTransactions() {
+		if envelope, err := consensus.ParseQdayEnvelope(txn.ArbitraryData); err == nil && envelope.Kind == consensus.QdayCanaryProof {
+			return txn.ID().String()
+		}
+	}
+	return ""
+}
+
+func FormatAmount(v, unit types.Currency) string {
+	q, r := new(big.Int), new(big.Int)
+	q.QuoRem(v.Big(), unit.Big(), r)
+	if r.Sign() == 0 {
+		return q.String()
+	}
+	decimals := len(unit.ExactString()) - 1
+	return q.String() + "." + strings.TrimRight(strings.Repeat("0", decimals-len(r.String()))+r.String(), "0")
+}
+
+func ParseAmount(str string, unit types.Currency) (types.Currency, error) {
+	decimals := len(unit.ExactString()) - 1
+	p := strings.Split(str, ".")
+	if len(p) > 2 || len(str) > 80 || len(p[0]) == 0 {
+		return types.ZeroCurrency, errors.New("invalid amount")
+	}
+	frac := ""
+	if len(p) == 2 {
+		frac = p[1]
+	}
+	if len(frac) > decimals {
+		return types.ZeroCurrency, errors.New("too many decimal places")
+	}
+	digits := p[0] + frac + strings.Repeat("0", decimals-len(frac))
+	for _, c := range digits {
+		if c < '0' || c > '9' {
+			return types.ZeroCurrency, errors.New("invalid amount")
+		}
+	}
+	return types.ParseCurrency(digits)
+}
+
+func (s *Service) Status() (map[string]any, error) {
+	cs := s.CM.TipState()
+	now := time.Now()
+	genesisWait := s.Manifest.Genesis.Timestamp.Sub(now)
+	if genesisWait < 0 {
+		genesisWait = 0
+	}
+	s.mu.Lock()
+	pub, unlocked, mode, threads, started, last := s.public, s.keys != nil, s.mode, s.threads, s.started, s.lastError
+	s.mu.Unlock()
+	peers := 0
+	if s.Syncer != nil {
+		peers = len(s.Syncer.Peers())
+	}
+	scan, err := s.WM.Tip()
+	if err != nil {
+		return nil, err
+	}
+	unit := cs.QdayUnits(cs.Index.Height)
+	r := map[string]any{"network": cs.Network.Name, "development": s.Manifest.Development, "height": cs.Index.Height, "genesis": s.Manifest.Genesis.ID(), "genesisTimestamp": s.Manifest.Genesis.Timestamp.Format(time.RFC3339), "genesisReady": genesisWait == 0, "genesisWaitSeconds": int64((genesisWait + time.Second - 1) / time.Second), "scanHeight": scan.Height, "synced": scan == cs.Index, "qdayHeight": cs.QdayHeight, "qday": cs.QdayActive(cs.Index.Height), "canary": fmt.Sprintf("%x", cs.Network.Qday.Canary), "unlocked": unlocked, "hasWallet": pub != (types.QdayAddress{}), "mode": mode, "threads": threads, "maxThreads": min(runtime.NumCPU(), 256), "peers": peers, "blocksFound": s.blocks.Load(), "lastError": last, "hashrate": float64(0), "balanceReady": false, "balance": nil, "immature": nil, "pending": nil, "fee": FormatAmount(types.HastingsPerSiacoin.Div64(1000), unit)}
+	r["unit"] = unit.ExactString()
+	r["canRestart"] = s.RestartEnabled
+	r["mempoolTransactions"] = len(s.CM.V2PoolTransactions())
+	if s.Syncer != nil {
+		var bootstrap, bootstrapOutbound, regular, inbound int
+		for _, p := range s.Syncer.Peers() {
+			if p.Err() != nil {
+				continue
+			}
+			if s.Syncer.IsBootstrap(p) {
+				bootstrap++
+				if !p.Inbound {
+					bootstrapOutbound++
+				}
+			} else {
+				regular++
+			}
+			if p.Inbound {
+				inbound++
+			}
+		}
+		network := map[string]any{"listenAddress": s.Syncer.Addr(), "bootstrapPeers": bootstrap, "bootstrapOutbound": bootstrapOutbound, "regularPeers": regular, "inboundPeers": inbound, "wireMagic": fmt.Sprintf("%x", gateway.QdayMagic())}
+		if s.PortMapping != nil {
+			network["mapping"] = s.PortMapping.Status()
+		}
+		r["p2p"] = network
+	}
+	r["proofFee"] = FormatAmount(cs.Network.Qday.ProofFee, unit)
+	r["proofPending"] = s.pendingProof()
+	r["activationDelay"] = cs.Network.Qday.ActivationDelay
+	r["blockReward"] = FormatAmount(cs.BlockReward(), unit)
+	r["blockIntervalSeconds"] = cs.Network.BlockInterval.Seconds()
+	r["difficulty"] = cs.Difficulty.String()
+	r["initialDifficulty"] = cs.Network.GenesisState().Difficulty.String()
+	r["powTarget"] = cs.PoWTarget().String()
+	r["difficultyAlgorithm"] = "Sia Oak / Final Cut"
+	r["maturityBlocks"] = cs.Network.MaturityDelay
+	networkSynced := s.networkSynced()
+	r["networkSynced"] = networkSynced
+	r["synced"] = scan == cs.Index && networkSynced
+	if !started.IsZero() && mode != "STOP" {
+		r["hashrate"] = float64(s.hashes.Load()) / time.Since(started).Seconds()
+	}
+	if pub == (types.QdayAddress{}) {
+		r["balanceReady"], r["balance"], r["immature"], r["pending"] = true, "0", "0", "0"
+		return r, nil
+	}
+	r["address"] = pub.String()
+	outs, err := s.outputs(cs, pub)
+	if errors.Is(err, errWalletSyncing) {
+		// An index catching up or a block arriving during pagination makes the
+		// amounts unknown, not zero. Clients may retain a labelled prior snapshot.
+		r["synced"] = false
+		return r, nil
+	} else if err != nil {
+		return nil, err
+	}
+	var available types.Currency
+	var next uint64
+	for _, out := range outs {
+		v := cs.QdayValue(out.SiacoinElement, cs.Index.Height)
+		available = available.Add(v)
+		if cs.QdayHeight != 0 && !v.IsZero() {
+			expiry := max(out.MaturityHeight, cs.QdayHeight) + cs.Network.Qday.ShieldBlocks
+			if next == 0 || expiry < next {
+				next = expiry
+			}
+		}
+	}
+	bal, err := s.WM.AddressBalance(types.Address(pub))
+	if err != nil {
+		return nil, err
+	}
+	var pending types.Currency
+	for _, tx := range s.CM.V2PoolTransactions() {
+		for _, o := range tx.SiacoinOutputs {
+			if o.Address == types.Address(pub) {
+				pending = pending.Add(o.Value)
+			}
+		}
+	}
+	// Mature outputs and immature totals must refer to the same chain index.
+	endScan, err := s.WM.Tip()
+	if err != nil {
+		return nil, err
+	} else if endScan != cs.Index || s.CM.Tip() != cs.Index {
+		r["synced"] = false
+		return r, nil
+	}
+	r["balanceReady"] = true
+	r["balance"] = FormatAmount(available, unit)
+	r["immature"] = FormatAmount(bal.ImmatureSiacoins, unit)
+	r["shieldUntil"] = next
+	r["pending"] = FormatAmount(pending, unit)
+	return r, nil
+}

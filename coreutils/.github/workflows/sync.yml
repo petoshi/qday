@@ -1,0 +1,38 @@
+name: Test Syncing
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+      - "v[0-9]+.[0-9]+.[0-9]+-**"
+    branches:
+      - master
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sync
+  cancel-in-progress: true
+
+jobs:
+  sync:
+    runs-on: syncer
+    timeout-minutes: 600
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - network: zen
+            checkpoint: 50::00000009ace8eeef88d4264fe6eb1a286e115aab985560ef0029bd0f903a4495
+          - network: mainnet
+            checkpoint: 530000::0000000000000000abb98e3b587fba3a0c4e723ac1e078e9d6a4d13d1d131a2c
+        network: [mainnet, zen]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+      - name: Setup Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+      - name: Sync
+        run: |
+          go run ./internal/cmd/sync --log.level=debug --network ${{ matrix.network }} --github.ref ${{ github.sha }} --checkpoint ${{ matrix.checkpoint }}
