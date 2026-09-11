@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import time
 import urllib.request
@@ -15,6 +16,13 @@ ROOT = Path(__file__).resolve().parents[1]
 HTTP = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 EXPECTED_GENESIS = "d71aebcb687c2fca4d3a5819e6c632efa7d46731395970fce081f3dc57606a40"
 EXPECTED_WIRE_MAGIC = "514441590001a74e"
+TARGET_SYSTEMS = {
+    "linux-amd64": "linux",
+    "linux-arm64": "linux",
+    "windows-amd64": "windows",
+    "macos-amd64": "macos",
+    "macos-arm64": "macos",
+}
 
 
 def wait_for(check, label, seconds=90):
@@ -41,7 +49,7 @@ def request(endpoint, token, route, body=None):
 
 def package_directory(package):
     archive = ROOT / package["archive"]
-    suffix = ".zip" if package["target"].startswith("windows") else ".tar.gz"
+    suffix = ".zip" if TARGET_SYSTEMS[package["target"]] == "windows" else ".tar.gz"
     if not archive.name.endswith(suffix):
         raise RuntimeError("Unexpected package filename: " + archive.name)
     return archive.parent / archive.name.removesuffix(suffix)
@@ -49,7 +57,7 @@ def package_directory(package):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--target", required=True, choices=["linux-amd64", "windows-amd64"])
+    parser.add_argument("--target", required=True, choices=TARGET_SYSTEMS)
     parser.add_argument("--report", type=Path, default=ROOT / "build/distribution-report.json")
     args = parser.parse_args()
     packages = json.loads(args.report.read_text())["packages"]
@@ -59,11 +67,13 @@ def main():
     if package["genesis"] != EXPECTED_GENESIS:
         raise RuntimeError("Distribution report contains the wrong mainnet genesis")
     distribution = package_directory(package)
-    executable = distribution / "resources" / ("qday-node.exe" if args.target.startswith("windows") else "qday-node")
+    system = TARGET_SYSTEMS[args.target]
+    executable = distribution / ("QDAY-Wallet.exe" if system == "windows" else "QDAY-Wallet")
     manifest = distribution / "resources/qday-mainnet.json"
     if hashlib.sha256(manifest.read_bytes()).hexdigest() != package["manifestSHA256"]:
         raise RuntimeError("Embedded mainnet manifest hash mismatch")
-    if args.target.startswith("windows") != (os.name == "nt"):
+    host_system = "windows" if os.name == "nt" else "macos" if sys.platform == "darwin" else "linux"
+    if system != host_system:
         raise RuntimeError("Run this check on the package's native operating system")
 
     seeds = json.loads((distribution / "resources/distribution.json").read_text())["seeds"]
@@ -73,9 +83,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="qday live mainnet ") as temp:
         data = Path(temp) / "node data"
         log_path = ROOT / "build" / ("live-mainnet-" + args.target + ".log")
-        command = [str(executable), "--network", str(manifest), "--data", str(data),
-            "--http", "127.0.0.1:0", "--p2p", "127.0.0.1:0", "--upnp=false",
-            "--seeds", ",".join(seeds), "--peers", ""]
+        command = [str(executable), "--data", str(data), "--no-browser", "--upnp=false"]
         endpoint = None
         token = ""
         with log_path.open("w") as log:
@@ -114,7 +122,8 @@ def main():
                     except subprocess.TimeoutExpired:
                         process.kill()
                         process.wait()
-        if token and token in log_path.read_text():
+        node_log = data / "node.log"
+        if token and (token in log_path.read_text() or (node_log.exists() and token in node_log.read_text())):
             raise RuntimeError("Local API token was written to the node log")
     result = {
         "result": "PASS",

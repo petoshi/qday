@@ -140,7 +140,7 @@ create nothing. Decay can permanently destroy spendable supply.
 
 ## 🚀 Quick Start for the Impatient
 
-Download the Linux or Windows archive and its `.sha256` file from this
+Download the archive for your Linux, Windows or macOS machine and its `.sha256` file from this
 repository's Releases page. Extract the **entire** archive before opening the
 wallet. The executable needs the bundled `resources` directory beside it.
 
@@ -167,6 +167,20 @@ currently unsigned, so Windows may show a publisher warning. Verify the hash
 and get the archive from this repository. Random binaries in DMs are how you
 turn a wallet into somebody else's wallet.
 
+### macOS
+
+Use `macos-arm64` on Apple Silicon and `macos-amd64` on Intel:
+
+```bash
+shasum -a 256 -c QDAY-Wallet-0.5.0-mainnet-macos-arm64.tar.gz.sha256
+tar -xzf QDAY-Wallet-0.5.0-mainnet-macos-arm64.tar.gz
+cd QDAY-Wallet-0.5.0-mainnet-macos-arm64
+./QDAY-Wallet
+```
+
+The first macOS release is unsigned. Verify the hash before opening it; macOS
+may require **Open Anyway** in Privacy & Security for both bundled executables.
+
 ### First run
 
 1. Create a wallet or import an existing QDAY seed phrase.
@@ -179,9 +193,9 @@ The interface opens in your browser, but the node and miner are native code.
 Closing the tab leaves QDAY running. Open the executable again to reopen it.
 Use **EXIT QDAY** in the top-right corner to stop the complete application.
 
-Wallet and chain data live in `%APPDATA%\qday` on Windows and
-`~/.config/qday` on Linux unless the operating system overrides its standard
-config directory.
+Wallet and chain data live in `%APPDATA%\qday` on Windows,
+`~/.config/qday` on Linux and `~/Library/Application Support/qday` on macOS
+unless the operating system overrides its standard config directory.
 
 ---
 
@@ -316,21 +330,22 @@ make smoke
 make browser
 ```
 
-Build both release archives:
+Build release archives for the current native target:
 
 ```bash
-make dist MANIFEST=qday-mainnet.json
+make dist MANIFEST=qday-mainnet.json TARGETS=linux-amd64
 make desktop-test
 ```
 
-Cross-building the Windows node requires `x86_64-w64-mingw32-gcc`. The release
-archives contain native executables, the fixed mainnet manifest, the public
-docs and dependency licenses. They never contain a wallet key, seed phrase or
-API token.
+Supported targets are `linux-amd64`, `linux-arm64`, `windows-amd64`,
+`macos-amd64` and `macos-arm64`. The release archives contain native
+executables, the fixed mainnet manifest, the public docs and dependency
+licenses. They never contain a wallet key, seed phrase or API token.
 
-GitHub Actions builds Linux on Ubuntu and Windows on a native Windows runner.
-CI validates the archive, starts a keyless node, completes a live seed
-handshake and shuts it down. It never creates a wallet or runs the miner.
+GitHub Actions builds each target on matching x86-64 or ARM64 Linux, Windows
+and macOS hardware. CI validates the archive, starts a keyless node, completes
+a live seed handshake and shuts it down. It never creates a wallet or runs the
+miner.
 
 ---
 

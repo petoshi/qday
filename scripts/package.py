@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Build self-contained Windows/Linux wallets. Requires Go, gcc and MinGW.
+"""Build self-contained Linux, Windows and macOS wallets.
+
+Requires Go and a native C compiler; Windows cross-builds require MinGW.
 
 The downloaded wallet needs none of those tools: open QDAY-Wallet and its
 bundled node serves the graphical interface in the system browser.
@@ -17,19 +19,31 @@ import zipfile
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 GO = str(ROOT / ".tools/go/bin/go") if (ROOT / ".tools/go/bin/go").exists() else "go"
 VERSION = "0.5.0"
+MAINNET_MANIFEST_SHA256 = "14d4a47a850f5ba9d81129142d8718c323d826b5f9459516374c4f0f92eaa65b"
+TARGETS = {
+    "linux-amd64": ("linux", "amd64"),
+    "linux-arm64": ("linux", "arm64"),
+    "windows-amd64": ("windows", "amd64"),
+    "macos-amd64": ("darwin", "amd64"),
+    "macos-arm64": ("darwin", "arm64"),
+}
 
 
 def build(target, out):
-    system, arch = target.split("-")
+    system, arch = TARGETS[target]
     env = os.environ.copy()
-    env.update(GOOS=system, GOARCH=arch, GOAMD64="v1", CGO_ENABLED="1")
+    env.update(GOOS=system, GOARCH=arch, CGO_ENABLED="1")
+    if arch == "amd64":
+        env["GOAMD64"] = "v1"
+    else:
+        env.pop("GOAMD64", None)
     suffix = ".exe" if system == "windows" else ""
     flags = "-s -w"
     tags = "netgo,osusergo,sqlite_omit_load_extension"
     if system == "windows":
         default_cc = "gcc" if os.name == "nt" else "x86_64-w64-mingw32-gcc"
         env["CC"] = os.environ.get("QDAY_WINDOWS_CC", default_cc)
-    else:
+    elif system == "linux":
         # Pure Go DNS + static SQLite avoid a distro-specific glibc dependency.
         flags += " -linkmode=external -extldflags=-static"
     print(f"Building native node: {target}", flush=True)
@@ -43,8 +57,8 @@ def build(target, out):
 
 
 def package(target, args):
-    if target not in ("linux-amd64", "windows-amd64"):
-        raise ValueError("Supported targets: linux-amd64, windows-amd64")
+    if target not in TARGETS:
+        raise ValueError("Supported targets: " + ", ".join(TARGETS))
     network = "mainnet"
     name = f"QDAY-Wallet-{VERSION}-{network}-{target}"
     out = args.output/name
@@ -82,7 +96,8 @@ def package(target, args):
 No Go, Python, Node.js, Docker or separately installed database is required.
 The resources folder must remain next to {start}.
 Your keys and blockchain data stay on this computer, outside this download folder.
-Wallet data: Windows %APPDATA%\\qday; Linux ~/.config/qday (or XDG_CONFIG_HOME).
+Wallet data: Windows %APPDATA%\\qday; Linux ~/.config/qday (or XDG_CONFIG_HOME);
+macOS ~/Library/Application Support/qday.
 The mining engine runs in the native application, not in browser JavaScript.
 Closing the browser leaves QDAY running. EXIT QDAY in the top right stops the complete app.
 Settings provides Import seed phrase and Export seed phrase. Import replaces
@@ -92,9 +107,9 @@ the password; a different phrase replaces the local wallet without a backup.
 Open {start} again to reopen an already running wallet.
 Linux: if your file manager does not launch executables, run ./{start} from this folder.
 
-Windows executables are currently unsigned. Windows-native release testing and
-publisher signing are separate from Linux/Wine verification. Do not disable
-security software to install this application.
+Windows and macOS executables are currently unsigned. Verify the release hash
+before opening them. Native CI verifies startup and a live mainnet handshake
+on every supported operating system and architecture.
 """
     (out/"START-HERE.txt").write_text(instructions, encoding="utf-8")
     executable = out/start
@@ -110,7 +125,8 @@ security software to install this application.
         archive = out.parent/(name+".tar.gz")
         with tarfile.open(archive,"w:gz") as tf: tf.add(out,arcname=name)
     sha = hashlib.sha256(archive.read_bytes()).hexdigest()
-    pathlib.Path(str(archive)+".sha256").write_text(sha+"  "+archive.name+"\n")
+    with pathlib.Path(str(archive)+".sha256").open("w", newline="\n") as checksum:
+        checksum.write(sha+"  "+archive.name+"\n")
     print(archive.relative_to(ROOT), flush=True)
     return {"target":target,"network":network,"genesis":args.genesis_id,
             "genesisTimestamp":args.genesis_timestamp,"manifestSHA256":args.manifest_sha256,
@@ -120,7 +136,7 @@ security software to install this application.
 
 def main():
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--targets",nargs="+",default=["linux-amd64","windows-amd64"])
+    p.add_argument("--targets",nargs="+",default=["linux-amd64","windows-amd64"],choices=TARGETS)
     p.add_argument("--manifest", type=pathlib.Path, required=True, help="validated QDAY mainnet manifest")
     p.add_argument("--peers",nargs="*",default=(ROOT/"node/internal/localapp/seeds.txt").read_text().split(),help="bootstrap peers bundled in the distribution (defaults to the three pqday.com seeds)")
     p.add_argument("--output",type=pathlib.Path,default=ROOT/"build/dist",help="archive output directory")
@@ -140,6 +156,8 @@ def main():
         args.genesis_timestamp = manifest_data["genesis"]["timestamp"]
         args.genesis_message = manifest_data.get("genesisMessage", "")
         args.manifest_sha256 = hashlib.sha256(args.manifest.read_bytes()).hexdigest()
+        if args.manifest_sha256 != MAINNET_MANIFEST_SHA256:
+            raise RuntimeError("mainnet manifest bytes do not match the published SHA-256")
     report={"version":VERSION,"genesis":args.genesis_id,"genesisTimestamp":args.genesis_timestamp,
             "manifestSHA256":args.manifest_sha256,"genesisMessage":args.genesis_message,
             "packages":[package(target,args) for target in args.targets]}
