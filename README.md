@@ -364,11 +364,6 @@ executables, the fixed mainnet manifest, the public docs and dependency
 licenses. Each target gets a graphical wallet archive and a standalone node
 archive. They never contain a wallet key, seed phrase or API token.
 
-GitHub Actions builds each target on matching x86-64 or ARM64 Linux, Windows
-and macOS hardware. CI validates the archive, starts a keyless node, completes
-a live seed handshake and shuts it down. It never creates a wallet or runs the
-miner.
-
 ---
 
 ## 🚨 Read This Before You Act Surprised

@@ -29,14 +29,16 @@ function genesisTime(value) {
 }
 function message(text = "", error = false, persistent = false) {
   clearTimeout(messageTimer);
-  $("message").textContent = text;
+  $("messageText").textContent = text;
+  $("message").hidden = !text;
   $("message").classList.toggle("error", error);
   document.querySelectorAll("dialog .dialog-message").forEach(el => {el.textContent = "";});
   const modal = Array.from(document.querySelectorAll("dialog[open]")).at(-1);
   const local = modal?.querySelector("form:not([hidden]) .dialog-message") || modal?.querySelector(".dialog-message");
   if (local) {local.textContent = text;local.classList.toggle("error", error);}
-  if (text && !persistent && !error) messageTimer = setTimeout(() => message(), 6500);
+  if (text && !persistent && !error) messageTimer = setTimeout(() => message(), 10000);
 }
+$("dismissMessage").onclick = () => message();
 function view(name, focus) {
   if (latest?.hasWallet && !latest.unlocked) return;
   if (!["overview", "send", "receive", "survival", "settings"].includes(name)) return;
@@ -432,7 +434,7 @@ $("confirmTransfer").onclick = () => action(async () => {
   }
   const value = await api("send", transferDraft);
   $("sendReview").close(); $("amount").value = "";
-  message("Submitted; waiting for a block. Transaction: " + value.transaction, false, true);
+  message("Submitted; waiting for a block. Transaction: " + value.transaction);
 });
 $("burnForm").onsubmit = e => {
   e.preventDefault();
@@ -458,7 +460,7 @@ $("confirmBurn").onclick = () => action(async () => {
   }
   const value = await api("burn", burnDraft);
   $("burnReview").close(); $("burnAmount").value = "";
-  message("Burn submitted; supply changes after confirmation. Transaction: " + value.transaction, false, true);
+  message("Burn submitted; supply changes after confirmation. Transaction: " + value.transaction);
 });
 $("copyAddress").onclick = async () => {
   if (!latest?.address) return;
@@ -492,7 +494,7 @@ $("confirmProof").onclick = () => action(async () => {
   if (!proofDraft) return;
   const value = await api("proof", proofDraft);
   $("proofReview").close(); $("proofWitness").value = "";
-  message("Proof submitted; waiting for a block. Transaction: " + value.transaction, false, true);
+  message("Proof submitted; waiting for a block. Transaction: " + value.transaction);
 });
 $("peerForm").onsubmit = e => {
   e.preventDefault(); action(async () => {
