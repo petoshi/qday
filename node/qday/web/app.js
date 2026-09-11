@@ -3,7 +3,7 @@ const $ = id => document.getElementById(id);
 let token = sessionStorage.getItem("qdayToken") || "";
 let latest = null, backupPending = false, busy = false, stopped = false, connected = false;
 let transferDraft = null, messageTimer, polling = null, chosenThreads = false;
-let setupMode = "create", setupDismissed = false, proofDraft = null;
+let setupMode = "create", setupDismissed = false, proofDraft = null, burnDraft = null;
 let backupMustSave = false, importAddress = "", lockedRecoveryAddress = "";
 let balanceSnapshot = null;
 const samples = [];
@@ -71,6 +71,8 @@ function controls() {
   $("start").disabled = !connected || !latest?.unlocked || !latest?.networkSynced || latest?.genesisReady === false || backupPending || busy || stopped;
   $("send").disabled = !ready;
   $("confirmTransfer").disabled = !ready;
+  $("reviewBurn").disabled = !ready;
+  $("confirmBurn").disabled = !ready || !burnDraft || $("burnConfirmation").value.trim() !== "BURN";
   $("stop").disabled = !connected || latest?.mode === "STOP" || stopped;
   $("lock").disabled = !connected || busy || stopped;
   $("quit").disabled = !connected || busy || stopped;
@@ -121,7 +123,7 @@ function controls() {
   $("verifyProof").disabled = !connected || !!latest?.qdayHeight || !!latest?.proofPending || busy || stopped;
   $("confirmProof").disabled = !ready || !proofDraft || !!latest?.qdayHeight || !!latest?.proofPending;
   $("proofWalletNotice").hidden = !!latest?.unlocked && !!latest?.synced;
-  document.querySelectorAll("#createForm button, #unlockForm button, #lockedRecoveryForm button, #recoveryForm button, [data-setup], #browseSetup, #cancelTransfer, #cancelProof").forEach(el => {el.disabled = busy || !connected;});
+  document.querySelectorAll("#createForm button, #unlockForm button, #lockedRecoveryForm button, #recoveryForm button, [data-setup], #browseSetup, #cancelTransfer, #cancelBurn, #cancelProof").forEach(el => {el.disabled = busy || !connected;});
   document.querySelectorAll("#recoveryForm button").forEach(el => {el.disabled = busy || !connected || !latest?.hasWallet;});
   document.querySelectorAll("#importForm button, #cancelImport, #cancelRecovery").forEach(el => {el.disabled = busy || !connected;});
 }
@@ -165,7 +167,7 @@ function setUnlockMode(recovery = false) {
 }
 function showLockedWallet() {
   setWalletScreenLocked(true);
-  hideBackup(); transferDraft = null; proofDraft = null;
+  hideBackup(); transferDraft = null; proofDraft = null; burnDraft = null;
   // A lock from this tab or another tab also closes any open wallet dialog.
   document.querySelectorAll("dialog[open]").forEach(el => {if (el.id !== "unlock") el.close();});
   if (!$("unlock").open) {
@@ -193,6 +195,7 @@ function render(s) {
   for (const id of ["mode","height","peers","fee"]) {
     $(id).textContent = id === "fee" ? coins(s[id]) : s[id];
   }
+  $("burnFee").textContent = coins(s.fee);
   renderBalance(s);
   $("hashrate").textContent = Math.round(s.hashrate).toLocaleString();
   $("blocks").textContent = s.blocksFound;
@@ -339,7 +342,7 @@ $("importForm").onsubmit = e => {
   e.preventDefault(); action(async () => {
     if ($("importPassword").value !== $("importConfirm").value) throw new Error("Passwords do not match. Enter the same password twice.");
     await api("restore", {password:$("importPassword").value, phrase:$("importPhrase").value.trim(), replaceAddress:importAddress});
-    $("importWallet").close(); samples.length = 0; transferDraft = null; proofDraft = null;
+    $("importWallet").close(); samples.length = 0; transferDraft = null; proofDraft = null; burnDraft = null;
     message("Wallet imported. Mining and DEFEND are stopped.");
   });
 };
@@ -381,7 +384,7 @@ $("lockedRecoveryForm").onsubmit = e => {
     if ($("lockedNewPassword").value !== $("lockedConfirmPassword").value) throw new Error("Passwords do not match. Enter the same password twice.");
     const value = await api("restore", {password:$("lockedNewPassword").value, phrase:$("lockedSeed").value.trim(), replaceAddress:lockedRecoveryAddress});
     $("lockedRecoveryForm").querySelectorAll("input, textarea").forEach(el => {el.value = "";});
-    samples.length = 0; transferDraft = null; proofDraft = null;
+    samples.length = 0; transferDraft = null; proofDraft = null; burnDraft = null;
     message(value.address === lockedRecoveryAddress ? "Wallet recovered. Your new password is ready. Mining and DEFEND are stopped." : "Wallet imported and unlocked. Mining and DEFEND are stopped.");
   });
 };
@@ -431,6 +434,32 @@ $("confirmTransfer").onclick = () => action(async () => {
   $("sendReview").close(); $("amount").value = "";
   message("Submitted; waiting for a block. Transaction: " + value.transaction, false, true);
 });
+$("burnForm").onsubmit = e => {
+  e.preventDefault();
+  if ($("reviewBurn").disabled) return;
+  const amount = $("burnAmount").value.trim();
+  if (!/^(0|[1-9]\d*)(\.\d+)?$/.test(amount) || !/[1-9]/.test(amount)) {message("Enter a positive decimal amount to burn.", true);return;}
+  burnDraft = {amount, unit:latest.unit, fromAddress:latest.address};
+  $("burnReviewAmount").textContent = coins(amount);
+  $("burnReviewFee").textContent = coins(latest.fee) + " QDAY";
+  $("burnConfirmation").value = "";
+  controls(); message(); $("burnReview").showModal(); $("burnConfirmation").focus();
+};
+$("burnConfirmation").oninput = controls;
+$("cancelBurn").onclick = () => $("burnReview").close();
+$("burnReview").addEventListener("close", () => {
+  if ($("burnReview").open) return;
+  burnDraft = null; $("burnConfirmation").value = ""; controls();
+});
+$("confirmBurn").onclick = () => action(async () => {
+  if (!burnDraft || $("burnConfirmation").value.trim() !== "BURN") return;
+  if (burnDraft.unit !== latest.unit) {
+    $("burnReview").close(); throw new Error("QDAY changed the denomination. Review the burn amount again.");
+  }
+  const value = await api("burn", burnDraft);
+  $("burnReview").close(); $("burnAmount").value = "";
+  message("Burn submitted; supply changes after confirmation. Transaction: " + value.transaction, false, true);
+});
 $("copyAddress").onclick = async () => {
   if (!latest?.address) return;
   try {await navigator.clipboard.writeText(latest.address);message("Address copied.");}
@@ -458,7 +487,7 @@ $("proofForm").onsubmit = e => {
 };
 $("cancelProof").onclick = () => $("proofReview").close();
 $("proofReview").addEventListener("close", () => {if (!$("proofReview").open) proofDraft = null;});
-for (const name of ["sendReview", "proofReview"]) $(name).addEventListener("cancel", e => {if (busy) e.preventDefault();});
+for (const name of ["sendReview", "burnReview", "proofReview"]) $(name).addEventListener("cancel", e => {if (busy) e.preventDefault();});
 $("confirmProof").onclick = () => action(async () => {
   if (!proofDraft) return;
   const value = await api("proof", proofDraft);
@@ -486,7 +515,7 @@ $("restartPrompt").addEventListener("cancel", e => {if (busy) e.preventDefault()
 function showClosed(restarting = false) {
   stopped = true; connected = false; token = "";
   setWalletScreenLocked(false);
-  sessionStorage.removeItem("qdayToken"); hideBackup(); $("sendReview").close();
+  sessionStorage.removeItem("qdayToken"); hideBackup(); $("sendReview").close(); $("burnReview").close();
   document.querySelectorAll("dialog[open]").forEach(el => el.close());
   $("app").hidden = true; $("connect").hidden = true; $("closed").hidden = false;
   $("closedTitle").textContent = restarting ? "Restarting QDAY…" : "Your outpost is offline.";

@@ -55,7 +55,7 @@ func TestReplaceWallet(t *testing.T) {
 	if s.mode != "STOP" || s.runCancel != nil || s.runDone != nil {
 		t.Fatal("import left CPU activity running")
 	}
-	if _, err := s.submitFor(ctx, oldAddress, keys.Public.Address(), types.Siacoins(1), false, nil); err == nil || !strings.Contains(err.Error(), "active wallet changed") {
+	if _, err := s.submitFor(ctx, oldAddress, keys.Public.Address(), types.Siacoins(1), submitTransfer, nil); err == nil || !strings.Contains(err.Error(), "active wallet changed") {
 		t.Fatal("a stale transaction review can spend from the imported wallet")
 	}
 	if got, err := ReadKey(s.path, "new-test-password"); err != nil || got != newSeed {

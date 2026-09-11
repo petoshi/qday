@@ -53,6 +53,30 @@ type Service struct {
 	blocks           atomic.Uint64
 	restartRequested atomic.Bool
 	browser          browserSessions
+	supplyMu         sync.Mutex
+	supplyIndex      types.ChainIndex
+	supplyStatus     SupplyStatus
+	supplyCached     bool
+}
+
+type SupplyAmount struct {
+	QDAY   string `json:"qday"`
+	Atomic string `json:"atomic"`
+}
+
+// SupplyStatus is a chain-indexed monetary snapshot returned by the node.
+type SupplyStatus struct {
+	Network             string       `json:"network"`
+	Height              uint64       `json:"height"`
+	Synced              bool         `json:"synced"`
+	UnitAtomic          string       `json:"unitAtomic"`
+	IssuedSupply        SupplyAmount `json:"issuedSupply"`
+	BurnedSupply        SupplyAmount `json:"burnedSupply"`
+	CurrentSupply       SupplyAmount `json:"currentSupply"`
+	ImmatureSupply      SupplyAmount `json:"immatureSupply"`
+	CirculatingSupply   SupplyAmount `json:"circulatingSupply"`
+	MaximumIssuedSupply SupplyAmount `json:"maximumIssuedSupply"`
+	UnspentOutputs      uint64       `json:"unspentOutputs"`
 }
 
 func NewService(ctx context.Context, dir string, cm *chain.Manager, wm *wallet.Manager, sy *syncer.Syncer, manifest chain.QdayManifest) (*Service, error) {
@@ -420,22 +444,36 @@ func (s *Service) outputs(cs consensus.State, pub types.QdayAddress) ([]wallet.U
 // Transfer renews shields by spending to self. Burned input value cannot be
 // reintroduced as change or a miner fee. A small fee is paid for inclusion.
 func (s *Service) Transfer(ctx context.Context, to types.QdayAddress, amount types.Currency, defend bool) (types.TransactionID, error) {
-	return s.submit(ctx, to, amount, defend, nil)
+	mode := submitTransfer
+	if defend {
+		mode = submitDefend
+	}
+	return s.submitFor(ctx, "", to, amount, mode, nil)
+}
+
+// Burn permanently sends coins to the protocol's unspendable void address.
+func (s *Service) Burn(ctx context.Context, amount types.Currency) (types.TransactionID, error) {
+	return s.submitFor(ctx, "", types.QdayAddress{}, amount, submitBurn, nil)
 }
 
 // PublishProof funds and signs the proof before relaying it through the same
 // transaction pool and P2P path as an ordinary transfer.
 func (s *Service) PublishProof(ctx context.Context, witness [32]byte) (types.TransactionID, error) {
-	return s.submit(ctx, types.QdayAddress{}, types.ZeroCurrency, false, &witness)
+	return s.submitFor(ctx, "", types.QdayAddress{}, types.ZeroCurrency, submitProof, &witness)
 }
 
-func (s *Service) submit(ctx context.Context, to types.QdayAddress, amount types.Currency, defend bool, witness *[32]byte) (types.TransactionID, error) {
-	return s.submitFor(ctx, "", to, amount, defend, witness)
-}
+type submitMode uint8
+
+const (
+	submitTransfer submitMode = iota
+	submitDefend
+	submitBurn
+	submitProof
+)
 
 // Browser reviews name their source wallet so an import in another tab cannot
 // silently change which wallet pays for the reviewed transaction.
-func (s *Service) submitFor(ctx context.Context, from string, to types.QdayAddress, amount types.Currency, defend bool, witness *[32]byte) (types.TransactionID, error) {
+func (s *Service) submitFor(ctx context.Context, from string, to types.QdayAddress, amount types.Currency, mode submitMode, witness *[32]byte) (types.TransactionID, error) {
 	s.op.Lock()
 	defer s.op.Unlock()
 	s.mu.Lock()
@@ -448,7 +486,10 @@ func (s *Service) submitFor(ctx context.Context, from string, to types.QdayAddre
 		return types.TransactionID{}, errors.New("the active wallet changed; review the transaction again")
 	}
 	cs := s.CM.TipState()
-	if witness != nil {
+	if mode == submitProof {
+		if witness == nil {
+			return types.TransactionID{}, errors.New("missing QDAY proof")
+		}
 		if cs.QdayHeight != 0 {
 			return types.TransactionID{}, errors.New("a QDAY proof is already confirmed")
 		}
@@ -465,7 +506,7 @@ func (s *Service) submitFor(ctx context.Context, from string, to types.QdayAddre
 	}
 	sort.Slice(outs, func(i, j int) bool { return outs[i].MaturityHeight < outs[j].MaturityHeight })
 	fee := types.HastingsPerSiacoin.Div64(1000)
-	if witness != nil {
+	if mode == submitProof {
 		fee = cs.Network.Qday.ProofFee
 	}
 	required, overflow := amount.AddWithOverflow(fee)
@@ -479,7 +520,7 @@ func (s *Service) submitFor(ctx context.Context, from string, to types.QdayAddre
 		if v.IsZero() {
 			continue
 		}
-		if defend {
+		if mode == submitDefend {
 			if !cs.QdayActive(cs.Index.Height + 1) {
 				return types.TransactionID{}, errNothingToDefend
 			}
@@ -490,13 +531,13 @@ func (s *Service) submitFor(ctx context.Context, from string, to types.QdayAddre
 		}
 		total = total.Add(v)
 		txn.SiacoinInputs = append(txn.SiacoinInputs, types.V2SiacoinInput{Parent: out.SiacoinElement, SatisfiedPolicy: types.SatisfiedPolicy{Policy: keys.Public.Policy()}})
-		if len(txn.SiacoinInputs) == 64 || (!defend && total.Cmp(required) >= 0) {
+		if len(txn.SiacoinInputs) == 64 || (mode != submitDefend && total.Cmp(required) >= 0) {
 			break
 		}
 	}
 	var envelope consensus.QdayEnvelope
 	envelope.Kind = consensus.QdayTransfer
-	if witness != nil {
+	if mode == submitProof {
 		if total.Cmp(fee) < 0 {
 			return types.TransactionID{}, errors.New("insufficient confirmed balance to pay the proof fee")
 		}
@@ -505,11 +546,22 @@ func (s *Service) submitFor(ctx context.Context, from string, to types.QdayAddre
 		if change := total.Sub(fee); !change.IsZero() {
 			txn.SiacoinOutputs = []types.SiacoinOutput{{Value: change, Address: keys.Public.Policy().Address()}}
 		}
-	} else if defend {
+	} else if mode == submitDefend {
 		if total.Cmp(fee) <= 0 {
 			return types.TransactionID{}, errNothingToDefend
 		}
 		txn.SiacoinOutputs = []types.SiacoinOutput{{Value: total.Sub(fee), Address: keys.Public.Policy().Address()}}
+	} else if mode == submitBurn {
+		if amount.IsZero() {
+			return types.TransactionID{}, errors.New("burn amount must be positive")
+		}
+		if total.Cmp(required) < 0 {
+			return types.TransactionID{}, errors.New("insufficient confirmed spendable balance (including fee); at most 64 inputs per burn")
+		}
+		txn.SiacoinOutputs = []types.SiacoinOutput{{Value: amount, Address: types.VoidAddress}}
+		if change := total.Sub(amount).Sub(fee); !change.IsZero() {
+			txn.SiacoinOutputs = append(txn.SiacoinOutputs, types.SiacoinOutput{Value: change, Address: keys.Public.Policy().Address()})
+		}
 	} else {
 		if err = to.Validate(); err != nil {
 			return types.TransactionID{}, err
@@ -588,6 +640,66 @@ func ParseAmount(str string, unit types.Currency) (types.Currency, error) {
 		}
 	}
 	return types.ParseCurrency(digits)
+}
+
+func supplyAmount(value, unit types.Currency) SupplyAmount {
+	return SupplyAmount{QDAY: FormatAmount(value, unit), Atomic: value.ExactString()}
+}
+
+// Supply returns issuance and confirmed burns at one indexed chain state.
+// BurnedSupply includes explicit void outputs, discarded transaction value and
+// QDAY decay. CurrentSupply includes immature outputs because they already
+// exist, but excludes every value that can no longer be spent.
+func (s *Service) Supply() (SupplyStatus, error) {
+	index, err := s.WM.Tip()
+	if err != nil {
+		return SupplyStatus{}, err
+	}
+	state, ok := s.CM.State(index.ID)
+	if !ok || state.Index != index {
+		return SupplyStatus{}, errors.New("supply chain state is unavailable")
+	}
+
+	s.supplyMu.Lock()
+	defer s.supplyMu.Unlock()
+	if s.supplyCached && s.supplyIndex == index {
+		status := s.supplyStatus
+		status.Synced = index == s.CM.Tip() && s.networkSynced()
+		return status, nil
+	}
+
+	current, immature, outputs, err := s.WM.QdaySupply(state)
+	if err != nil {
+		return SupplyStatus{}, err
+	}
+	p := state.Network.Qday
+	if p == nil {
+		return SupplyStatus{}, errors.New("QDAY supply is unavailable on this network")
+	}
+	minedBlocks := min(index.Height, p.MiningBlocks)
+	issued := p.PremineAmount.Add(p.Reward.Mul64(minedBlocks))
+	if current.Cmp(issued) > 0 {
+		return SupplyStatus{}, errors.New("current supply exceeds issued supply")
+	} else if immature.Cmp(current) > 0 {
+		return SupplyStatus{}, errors.New("immature supply exceeds current supply")
+	}
+	maximum := p.PremineAmount.Add(p.Reward.Mul64(p.MiningBlocks))
+	unit := state.QdayUnits(index.Height)
+	status := SupplyStatus{
+		Network:             state.Network.Name,
+		Height:              index.Height,
+		Synced:              index == s.CM.Tip() && s.networkSynced(),
+		UnitAtomic:          unit.ExactString(),
+		IssuedSupply:        supplyAmount(issued, unit),
+		BurnedSupply:        supplyAmount(issued.Sub(current), unit),
+		CurrentSupply:       supplyAmount(current, unit),
+		ImmatureSupply:      supplyAmount(immature, unit),
+		CirculatingSupply:   supplyAmount(current.Sub(immature), unit),
+		MaximumIssuedSupply: supplyAmount(maximum, unit),
+		UnspentOutputs:      outputs,
+	}
+	s.supplyIndex, s.supplyStatus, s.supplyCached = index, status, true
+	return status, nil
 }
 
 func (s *Service) Status() (map[string]any, error) {

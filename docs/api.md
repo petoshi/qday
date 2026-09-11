@@ -37,10 +37,51 @@ Semantic errors normally return HTTP 400:
 
 Authentication errors return 401. Host and Origin violations return 403.
 
-`GET /api/network-status` is the only route that does not require the token. It
-returns the chain height, synchronization state and connection counts for local
-monitoring. It still requires the local Host and same-origin rules above and
-does not return wallet data.
+`GET /api/network-status` and `GET /api/supply` do not require the token. They
+return no wallet or key data. Both remain restricted by the local listener,
+Host and same-origin rules above.
+
+## Supply
+
+### `GET /api/supply`
+
+Returns supply calculated by the node from its fully validated, selected-chain
+UTXO index. It does not depend on an explorer or an external service.
+
+```json
+{
+  "network":"qday-mainnet",
+  "height":1000,
+  "synced":true,
+  "unitAtomic":"1000000000000000000000000",
+  "issuedSupply":{"qday":"508000","atomic":"508000000000000000000000000000"},
+  "burnedSupply":{"qday":"50000","atomic":"50000000000000000000000000000"},
+  "currentSupply":{"qday":"458000","atomic":"458000000000000000000000000000"},
+  "immatureSupply":{"qday":"480","atomic":"480000000000000000000000000"},
+  "circulatingSupply":{"qday":"457520","atomic":"457520000000000000000000000000"},
+  "maximumIssuedSupply":{"qday":"8500000","atomic":"8500000000000000000000000000000"},
+  "unspentOutputs":1234
+}
+```
+
+`issuedSupply` is the premine plus rewards created through `height`.
+`burnedSupply` is issued supply that is no longer spendable: confirmed void
+outputs, value deliberately omitted from a transaction and protocol decay.
+`currentSupply` is `issuedSupply - burnedSupply`. `immatureSupply` contains
+miner payouts that exist but cannot be spent yet. `circulatingSupply` is
+`currentSupply - immatureSupply`. `maximumIssuedSupply` is the premine plus all
+one million scheduled rewards.
+
+Every amount contains a display value under the denomination active at
+`height` and the exact atomic integer. Accounting systems should store the
+atomic value. Check `synced` before publishing the result. HTTP 503 means the
+full index has not reached an available chain state yet.
+
+The node caches the calculation for one chain index and recalculates it after
+the indexed tip changes. Source: [API response and issuance
+calculation](../node/qday/service.go), [full-UTXO supply
+calculation](../node/persist/sqlite/qday.go), and [post-QDAY value
+formula](../core/consensus/qday.go).
 
 ## Status
 
@@ -231,6 +272,30 @@ with both keys, places the transaction in its mempool and broadcasts it.
 ```json
 {"transaction":"<64-hex-character transaction ID>"}
 ```
+
+### `POST /api/burn`
+
+```json
+{
+  "fromAddress":"qday1p...",
+  "amount":"50000",
+  "unit":"1000000000000000000000000"
+}
+```
+
+Builds and broadcasts an irreversible transfer of `amount` to the protocol's
+all-zero void address. The wallet adds change, pays its normal 0.001 QDAY
+transfer fee under the original denomination, and signs every input with both
+wallet keys. At most 64 inputs are selected.
+
+`fromAddress` and `unit` have the same stale-review protection as `/api/send`.
+The response contains the transaction ID. The amount appears in
+`burnedSupply` only after confirmation on the selected chain.
+
+Burn transactions use the ordinary QDAY transfer header and are identified by
+an output whose address equals `types.VoidAddress`. See the [transaction
+builder](../node/qday/service.go) and [consensus
+description](consensus.md#intentional-burns).
 
 ### `POST /api/proof/verify`
 

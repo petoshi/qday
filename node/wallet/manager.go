@@ -159,6 +159,18 @@ type (
 	}
 )
 
+// QdaySupply returns the current value of every unspent, non-void output at
+// state.Index. It is available when the manager uses a full chain index.
+func (m *Manager) QdaySupply(state consensus.State) (types.Currency, types.Currency, uint64, error) {
+	store, ok := m.store.(interface {
+		QdaySupply(consensus.State) (types.Currency, types.Currency, uint64, error)
+	})
+	if !ok {
+		return types.ZeroCurrency, types.ZeroCurrency, 0, errors.New("wallet store does not provide QDAY supply")
+	}
+	return store.QdaySupply(state)
+}
+
 // String returns the string representation of the index mode.
 func (i IndexMode) String() string {
 	switch i {

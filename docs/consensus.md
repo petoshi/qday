@@ -154,15 +154,34 @@ block, the transfer nonce carries DEFEND work.
 
 ## Value conservation
 
-Before the QDAY block, the sum of input values must equal outputs plus miner
-fee. Starting with the QDAY block, each input is evaluated at its decayed value.
-Outputs plus fee may be lower than evaluated inputs; the difference is burned.
-They may never exceed evaluated inputs.
+The sum of outputs plus the miner fee may not exceed the sum of inputs.
+Starting with the QDAY block, each input is evaluated at its decayed value.
+Any positive difference between evaluated inputs and outputs plus fee is
+permanently destroyed.
 
 Transaction fees move existing units to the miner and do not increase supply.
 Consensus sets a minimum only for a challenge-proof transaction. The bundled
 wallet uses a fixed transfer and DEFEND fee of `10^21` atomic units. This is
 displayed as 0.001 QDAY before the event and 1,000 QDAY afterward.
+
+## Intentional burns
+
+An intentional burn is an ordinary QDAY transfer with an output addressed to
+`types.VoidAddress`, the 32-byte all-zero address. No signing policy exists for
+that address, so its output can never become an input. The bundled wallet pays
+the requested amount to the void address, returns change to the sender and pays
+the normal transfer fee. The transaction uses QDAY header kind `1`; there is no
+special burn opcode or privileged key.
+
+A burn changes network supply when its block joins the selected chain. A
+mempool transaction has not burned anything yet, and a chain reorganization
+that removes the confirming block restores the previous supply. Protocol decay
+and any input value omitted from outputs also reduce current supply.
+
+The implementation is in the [wallet transaction
+builder](../node/qday/service.go), the [void-address
+definition](../core/types/types.go) and the [node supply
+calculation](../node/persist/sqlite/qday.go).
 
 ## Challenge proof and the QDAY event
 

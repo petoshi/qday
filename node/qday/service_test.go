@@ -213,6 +213,7 @@ func TestNativeMinerWaitsForGenesis(t *testing.T) {
 
 func TestWalletHTTPBoundary(t *testing.T) {
 	s := newTestService(t)
+	synced(t, s)
 	server := httptest.NewUnstartedServer(nil)
 	server.Config.Handler = s.Handler(strings.Repeat("a", 64), server.Listener.Addr().String())
 	server.Start()
@@ -263,6 +264,23 @@ func TestWalletHTTPBoundary(t *testing.T) {
 		if _, ok := network[private]; ok {
 			t.Fatalf("network status exposed %q", private)
 		}
+	}
+
+	request, _ = http.NewRequest(http.MethodGet, server.URL+"/api/supply", nil)
+	request.Host = "127.0.0.1:" + port
+	response, err = server.Client().Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("supply returned HTTP %d", response.StatusCode)
+	}
+	var supply SupplyStatus
+	if err := json.NewDecoder(response.Body).Decode(&supply); err != nil {
+		t.Fatal(err)
+	} else if supply.CurrentSupply.QDAY != "500000" || supply.CirculatingSupply.QDAY != "500000" || supply.BurnedSupply.QDAY != "0" || supply.Height != 0 {
+		t.Fatalf("wrong genesis supply: %+v", supply)
 	}
 }
 

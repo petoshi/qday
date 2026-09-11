@@ -83,6 +83,21 @@ func (s *Service) Handler(token string, listenAddress string) http.Handler {
 			json.NewEncoder(w).Encode(s.networkStatus())
 			return
 		}
+		if r.URL.Path == "/api/supply" {
+			if r.Method != http.MethodGet {
+				http.Error(w, "GET required", http.StatusMethodNotAllowed)
+				return
+			}
+			value, err := s.Supply()
+			w.Header().Set("Content-Type", "application/json")
+			if err != nil {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+				return
+			}
+			json.NewEncoder(w).Encode(value)
+			return
+		}
 		got := sha256.Sum256([]byte(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")))
 		if !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") || (subtle.ConstantTimeCompare(got[:], expected[:]) != 1 && !s.browser.valid(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "), time.Now())) {
 			http.Error(w, "local access token required", http.StatusUnauthorized)
@@ -166,6 +181,19 @@ func (s *Service) Handler(token string, listenAddress string) http.Handler {
 		case "/api/defend":
 			id, err := s.Transfer(r.Context(), types.QdayAddress{}, types.ZeroCurrency, true)
 			respond(map[string]any{"transaction": id}, err)
+		case "/api/burn":
+			cs := s.CM.TipState()
+			if body.Unit != cs.QdayUnits(cs.Index.Height).ExactString() {
+				respond(nil, errors.New("QDAY denomination changed; review the burn amount again"))
+				return
+			}
+			amount, err := ParseAmount(body.Amount, cs.QdayUnits(cs.Index.Height))
+			if err != nil {
+				respond(nil, err)
+				return
+			}
+			id, err := s.submitFor(r.Context(), body.FromAddress, types.QdayAddress{}, amount, submitBurn, nil)
+			respond(map[string]any{"transaction": id}, err)
 		case "/api/send":
 			to, err := types.ParseQdayAddress(strings.TrimSpace(body.Address))
 			if err != nil {
@@ -182,7 +210,7 @@ func (s *Service) Handler(token string, listenAddress string) http.Handler {
 				respond(nil, err)
 				return
 			}
-			id, err := s.submitFor(r.Context(), body.FromAddress, to, amount, false, nil)
+			id, err := s.submitFor(r.Context(), body.FromAddress, to, amount, submitTransfer, nil)
 			respond(map[string]any{"transaction": id}, err)
 		case "/api/proof", "/api/proof/verify":
 			var witness [32]byte
@@ -206,7 +234,7 @@ func (s *Service) Handler(token string, listenAddress string) http.Handler {
 				respond(nil, errors.New("QDAY denomination changed; review the proof fee again"))
 				return
 			}
-			id, err := s.submitFor(r.Context(), body.FromAddress, types.QdayAddress{}, types.ZeroCurrency, false, &witness)
+			id, err := s.submitFor(r.Context(), body.FromAddress, types.QdayAddress{}, types.ZeroCurrency, submitProof, &witness)
 			respond(map[string]any{"transaction": id}, err)
 		default:
 			http.NotFound(w, r)

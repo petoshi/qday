@@ -23,6 +23,7 @@ This guide calls `h + 6` the **QDAY block**.
 | Sia Stratum or pool endpoint | No | QDAY 0.5.0 does not ship a Stratum server |
 | Sia explorer assumptions | No | Track the QDAY block, changing values, shields and decay |
 | Sia JSON APIs | No | The shipped API is local and controls one wallet |
+| Supply RPC | No | Read QDAY issuance and burns from `GET /api/supply` |
 
 An unmodified Sia node, wallet, pool controller or indexer cannot join or
 validate QDAY mainnet. Integrations should build with QDAY's copies of `core`,
@@ -121,6 +122,48 @@ in an output is therefore insufficient for solvency or withdrawal accounting.
 A transaction creates fresh outputs and starts new shields, but it pays a fee
 and requires both signatures and DEFEND work.
 
+### Burns and supply
+
+The bundled wallet burns coins by creating a normal header-kind-`1` transfer
+with an output to `types.VoidAddress`, the 32-byte all-zero address. It returns
+change to the sender and pays the ordinary wallet fee. There is no burn key,
+admin transaction or separate consensus opcode. Treat any confirmed output to
+the void address as permanently unspendable. Do not credit a mempool burn as
+final; a reorganization can remove its block.
+
+Every QDAY node maintains a full UTXO index and serves `GET /api/supply` on its
+local HTTP listener. Use that endpoint for supply reporting instead of trusting
+an explorer. The response gives:
+
+- `issuedSupply`: premine plus block rewards created through the reported
+  height;
+- `burnedSupply`: issued value lost to void outputs, omitted transaction value
+  and protocol decay;
+- `currentSupply`: issued supply minus burned supply;
+- `immatureSupply`: confirmed miner payouts still inside their maturity wait;
+- `circulatingSupply`: current supply minus immature supply;
+- `maximumIssuedSupply`: premine plus every scheduled mining reward.
+
+Each value contains `qday` for display and `atomic` for exact accounting. The
+display denomination changes at the QDAY block, so integrations should persist
+the atomic integer, record `height`, and require `synced: true` before
+publishing the value. Current supply includes immature miner payouts.
+
+Code: [burn construction](../node/qday/service.go), [node UTXO supply
+query](../node/persist/sqlite/qday.go), [void address](../core/types/types.go),
+and [decay evaluation](../core/consensus/qday.go).
+
+The hosted explorer republishes its local node result at
+[`https://explorer.pqday.com/api/supply`](https://explorer.pqday.com/api/supply).
+Aggregators can read the synchronized display number directly from
+[`/api/circulating-supply`](https://explorer.pqday.com/api/circulating-supply)
+or current total supply from
+[`/api/total-supply`](https://explorer.pqday.com/api/total-supply). The public
+API permits a burst of 30 requests and refills at two requests per second;
+excess requests receive HTTP 429 and `Retry-After`. Its implementation is in
+the explorer's [API](https://github.com/petoshi/qday-explorer/blob/main/api.go)
+and [rate limiter](https://github.com/petoshi/qday-explorer/blob/main/rate_limit.go).
+
 ### Deposits and confirmations
 
 Index outputs and spends from the chain selected by accumulated work. Treat
@@ -150,23 +193,22 @@ An explorer should index:
 - output maturity height, shield start, shield deadline and decay progress;
 - pending and confirmed challenge proof, scheduled QDAY block and active
   denomination;
-- gross issuance, burned value and current spendable supply as separate values.
+- issued, burned and current supply from the node's `/api/supply` response.
 
 The first transaction in each block is a coinbase marker with no monetary
 inputs or outputs. Display it separately from transfers. QDAY header kind `3`
 identifies the challenge proof. Kind `1` covers both payments and DEFEND
 self-transfers; detect a renewal by its inputs and destination address.
 
-No burn transaction appears when an output decays. To report spendable supply,
-calculate the current value of every unspent output or maintain an equivalent
-height-indexed model using the formula in
-[`consensus.md`](consensus.md).
+An explicit burn is a transfer with a void-address output. Decay has no separate
+transaction. The node accounts for both in `/api/supply`; explorers should show
+that chain-indexed result and link explicit burn transactions normally.
 
-QDAY 0.5.0 does not expose a public explorer API, and the local wallet API does
-not return historical blocks or arbitrary-address balances. Build the indexer
-against `coreutils/chain.Manager`. Process both apply and revert updates, and
-retain the chain state and UTXO accumulator data needed to validate later spends
-and handle reorganizations.
+The local node API does not return historical blocks or arbitrary-address
+balances. Build an indexer against `coreutils/chain.Manager`, or use the hosted
+explorer API linked above. A custom indexer must process both apply and revert
+updates and retain the chain state and UTXO accumulator data needed to validate
+later spends and handle reorganizations.
 
 ## P2P integration
 
