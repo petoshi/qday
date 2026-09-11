@@ -256,6 +256,30 @@ func (s *Service) networkSynced() bool {
 	return false
 }
 
+func (s *Service) networkStatus() map[string]any {
+	connections, inbound := 0, 0
+	if s.Syncer != nil {
+		for _, p := range s.Syncer.Peers() {
+			if p.Err() != nil {
+				continue
+			}
+			connections++
+			if p.Inbound {
+				inbound++
+			}
+		}
+	}
+	cs := s.CM.TipState()
+	return map[string]any{
+		"network":             cs.Network.Name,
+		"height":              cs.Index.Height,
+		"synced":              s.networkSynced(),
+		"connections":         connections,
+		"inboundConnections":  inbound,
+		"outboundConnections": connections - inbound,
+	}
+}
+
 func (s *Service) Start(threads int) error {
 	s.control.Lock()
 	defer s.control.Unlock()

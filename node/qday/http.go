@@ -74,6 +74,15 @@ func (s *Service) Handler(token string, listenAddress string) http.Handler {
 			json.NewEncoder(w).Encode(map[string]string{"token": token})
 			return
 		}
+		if r.URL.Path == "/api/network-status" {
+			if r.Method != http.MethodGet {
+				http.Error(w, "GET required", http.StatusMethodNotAllowed)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(s.networkStatus())
+			return
+		}
 		got := sha256.Sum256([]byte(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")))
 		if !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") || (subtle.ConstantTimeCompare(got[:], expected[:]) != 1 && !s.browser.valid(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "), time.Now())) {
 			http.Error(w, "local access token required", http.StatusUnauthorized)

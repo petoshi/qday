@@ -26,6 +26,9 @@ func WithSeedMode(peers []string) Option {
 	return func(c *config) {
 		c.SeedMode = true
 		c.SeedPeers = slices.Clone(peers)
+		// Public bootstrap servers need substantially more inbound capacity than
+		// desktop nodes. The listener and RPC limits still bound pending work.
+		c.MaxInboundPeers = max(c.MaxInboundPeers, 256)
 		c.MaxOutboundPeers = 8 + len(peers)
 	}
 }

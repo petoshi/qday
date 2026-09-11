@@ -1,12 +1,30 @@
 package gateway
 
 import (
+	"errors"
 	"net"
 	"testing"
 	"time"
 
 	"go.sia.tech/core/types"
 )
+
+func TestDeadlineConnStopsBlockedWrite(t *testing.T) {
+	ours, theirs := net.Pipe()
+	defer ours.Close()
+	defer theirs.Close()
+
+	c := &deadlineConn{Conn: ours, timeout: 20 * time.Millisecond}
+	c.enabled.Store(true)
+	started := time.Now()
+	_, err := c.Write([]byte("peer stopped reading"))
+	var netErr net.Error
+	if !errors.As(err, &netErr) || !netErr.Timeout() {
+		t.Fatalf("expected a write timeout, got %v", err)
+	} else if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("blocked write took %v to stop", elapsed)
+	}
+}
 
 func TestQdayWireIsolation(t *testing.T) {
 	qday := Header{ProtocolMagic: QdayMagic(), GenesisID: types.BlockID{1}, UniqueID: GenerateUniqueID(), NetAddress: "127.0.0.1:19771"}

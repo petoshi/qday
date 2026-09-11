@@ -37,6 +37,11 @@ Semantic errors normally return HTTP 400:
 
 Authentication errors return 401. Host and Origin violations return 403.
 
+`GET /api/network-status` is the only route that does not require the token. It
+returns the chain height, synchronization state and connection counts for local
+monitoring. It still requires the local Host and same-origin rules above and
+does not return wallet data.
+
 ## Status
 
 ### `GET /api/status`

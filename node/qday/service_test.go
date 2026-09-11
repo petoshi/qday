@@ -2,6 +2,7 @@ package qday
 
 import (
 	"context"
+	"encoding/json"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -240,6 +241,29 @@ func TestWalletHTTPBoundary(t *testing.T) {
 	check(strings.Repeat("a", 64), "attacker.invalid:"+port, "", 403)
 	check(strings.Repeat("a", 64), "127.0.0.1:"+port, "http://attacker.invalid", 403)
 	check(strings.Repeat("a", 64), "127.0.0.1:"+port, "", 200)
+
+	request, _ := http.NewRequest(http.MethodGet, server.URL+"/api/network-status", nil)
+	request.Host = "127.0.0.1:" + port
+	response, err := server.Client().Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("network status returned HTTP %d", response.StatusCode)
+	}
+	var network map[string]any
+	if err := json.NewDecoder(response.Body).Decode(&network); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := network["connections"]; !ok {
+		t.Fatal("network status omitted connections")
+	}
+	for _, private := range []string{"address", "balance", "unlocked", "hasWallet"} {
+		if _, ok := network[private]; ok {
+			t.Fatalf("network status exposed %q", private)
+		}
+	}
 }
 
 func TestAmountAndRecovery(t *testing.T) {

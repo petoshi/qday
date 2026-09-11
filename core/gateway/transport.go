@@ -5,12 +5,38 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"sync/atomic"
 	"time"
 
 	"go.sia.tech/core/types"
 	"go.sia.tech/mux"
 	"lukechampine.com/frand"
 )
+
+const peerWriteTimeout = 60 * time.Second
+
+// deadlineConn prevents one peer that has stopped reading from blocking the
+// transport writer forever. It is enabled after the mux handshake so the
+// caller's shorter handshake deadline remains authoritative.
+type deadlineConn struct {
+	net.Conn
+	enabled atomic.Bool
+	timeout time.Duration
+}
+
+func (c *deadlineConn) Write(p []byte) (n int, err error) {
+	if !c.enabled.Load() {
+		return c.Conn.Write(p)
+	}
+	if err := c.Conn.SetWriteDeadline(time.Now().Add(c.timeout)); err != nil {
+		return 0, err
+	}
+	n, err = c.Conn.Write(p)
+	if clearErr := c.Conn.SetWriteDeadline(time.Time{}); err == nil && clearErr != nil {
+		err = clearErr
+	}
+	return n, err
+}
 
 // A UniqueID is a randomly-generated nonce that helps prevent self-connections
 // and double-connections.
@@ -198,8 +224,12 @@ func Dial(conn net.Conn, ourHeader Header) (*Transport, error) {
 		return nil, fmt.Errorf("could not read peer's header: %w", err)
 	}
 	// establish mux
+	bounded := &deadlineConn{Conn: conn, timeout: peerWriteTimeout}
 	var err error
-	p.mux, err = mux.DialAnonymous(conn)
+	p.mux, err = mux.DialAnonymous(bounded)
+	if err == nil {
+		bounded.enabled.Store(true)
+	}
 	return p, err
 }
 
@@ -228,7 +258,11 @@ func Accept(conn net.Conn, ourHeader Header) (*Transport, error) {
 		return nil, fmt.Errorf("could not write our header: %w", err)
 	}
 	// establish mux
+	bounded := &deadlineConn{Conn: conn, timeout: peerWriteTimeout}
 	var err error
-	p.mux, err = mux.AcceptAnonymous(conn)
+	p.mux, err = mux.AcceptAnonymous(bounded)
+	if err == nil {
+		bounded.enabled.Store(true)
+	}
 	return p, err
 }

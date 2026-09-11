@@ -58,6 +58,8 @@ connect to the bootstrap nodes again.
 A bootstrap node runs in seed mode. It keeps its configured links to the other
 bootstrap nodes and maintains up to eight additional outbound peer connections.
 Seed mode has no wallet keys and never starts mining by itself.
+Each public seed accepts up to 256 inbound QDAY connections. Desktop nodes keep
+the normal 64-connection inbound limit.
 
 ## Listeners and routers
 

@@ -196,13 +196,13 @@ func WithDialer(d Dialer) Option {
 }
 
 // WithMaxInboundPeers sets the maximum number of inbound connections. The
-// default is 8.
+// default is 64.
 func WithMaxInboundPeers(n int) Option {
 	return func(c *config) { c.MaxInboundPeers = n }
 }
 
 // WithMaxOutboundPeers sets the maximum number of outbound connections. The
-// default is 8.
+// default is 16.
 func WithMaxOutboundPeers(n int) Option {
 	return func(c *config) { c.MaxOutboundPeers = n }
 }
@@ -695,7 +695,9 @@ func (s *Syncer) acceptLoop(ctx context.Context) error {
 				// logging is very noisy
 				return
 			}
-			conn.SetDeadline(time.Time{})
+			// Clear the handshake read deadline. The gateway transport manages
+			// write deadlines for the lifetime of the connection.
+			conn.SetReadDeadline(time.Time{})
 			p := &Peer{
 				t:        t,
 				ConnAddr: conn.RemoteAddr().String(),
@@ -1005,7 +1007,6 @@ func (s *Syncer) Connect(ctx context.Context, addr string) (*Peer, error) {
 		deadline = d
 	}
 	conn.SetDeadline(deadline)
-	defer conn.SetDeadline(time.Time{})
 	t, err := gateway.Dial(conn, s.header)
 	if err != nil {
 		conn.Close()
@@ -1014,6 +1015,9 @@ func (s *Syncer) Connect(ctx context.Context, addr string) (*Peer, error) {
 		conn.Close()
 		return nil, errors.New("already connected")
 	}
+	// Clear the handshake read deadline. The gateway transport manages write
+	// deadlines for the lifetime of the connection.
+	conn.SetReadDeadline(time.Time{})
 	p := &Peer{
 		t:        t,
 		ConnAddr: conn.RemoteAddr().String(),
