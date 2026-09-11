@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Exercise complete Windows (Wine64) and Linux archives with private test wallets."""
+"""Exercise complete Windows and Linux archives with private test wallets."""
 import argparse
 import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tarfile
 import tempfile
@@ -19,6 +20,7 @@ from smoke import Node
 ROOT = Path(__file__).resolve().parents[1]
 HTTP = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 PASSWORD = "temporary-desktop-test-passphrase"
+GO = str(ROOT / ".tools/go/bin/go") if (ROOT / ".tools/go/bin/go").exists() else (shutil.which("go") or "go")
 
 
 def wait_for(check, label, seconds=40):
@@ -65,7 +67,7 @@ def exercise(package, work):
     assert embedded.get("genesisMessage", "") == package["genesisMessage"]
     fixture = work / (target + " disposable genesis")
     fixture.mkdir()
-    subprocess.run([str(ROOT / ".tools/go/bin/go"), "run", "./node/internal/testgenesis", str(fixture)], cwd=ROOT, check=True)
+    subprocess.run([GO, "run", "./node/internal/testgenesis", str(fixture)], cwd=ROOT, check=True)
     manifest = fixture / "test-mainnet.json"
     fixture_manifest = json.loads(manifest.read_text())
     assert fixture_manifest.get("genesisMessage") == package["genesisMessage"]
@@ -75,14 +77,18 @@ def exercise(package, work):
     seed = Node(work / (target + " seed"), "desktop-"+target+"-seed", manifest=manifest, seed_node=True)
     env = os.environ.copy()
     if target.startswith("windows"):
-        # Keep Wine's z: -> / drive mapping outside the repository. File
-        # indexers must never encounter that recursive system-wide symlink.
-        env.update(WINEPREFIX=str(work / (target + " wine prefix")), WINEARCH="win64", WINEDEBUG="-all")
         executable = distribution / "QDAY-Wallet.exe"
-        cmd = ["/usr/lib/wine/wine64", str(executable), "--data", "Z:" + str(data).replace("/", "\\"), "--no-browser"]
         node_executable = distribution / "resources/qday-node.exe"
-        embedded_arg = "Z:" + str(embedded_manifest).replace("/", "\\")
-        validation_cmd = ["/usr/lib/wine/wine64", str(node_executable), "--network", embedded_arg, "--validate"]
+        if os.name == "nt":
+            cmd = [str(executable), "--data", str(data), "--no-browser"]
+            validation_cmd = [str(node_executable), "--network", str(embedded_manifest), "--validate"]
+        else:
+            # Keep Wine's z: -> / drive mapping outside the repository. File
+            # indexers must never encounter that recursive system-wide symlink.
+            env.update(WINEPREFIX=str(work / (target + " wine prefix")), WINEARCH="win64", WINEDEBUG="-all")
+            cmd = ["/usr/lib/wine/wine64", str(executable), "--data", "Z:" + str(data).replace("/", "\\"), "--no-browser"]
+            embedded_arg = "Z:" + str(embedded_manifest).replace("/", "\\")
+            validation_cmd = ["/usr/lib/wine/wine64", str(node_executable), "--network", embedded_arg, "--validate"]
     else:
         executable = distribution / "QDAY-Wallet"
         cmd = [str(executable), "--data", str(data), "--no-browser"]
@@ -90,7 +96,7 @@ def exercise(package, work):
         validation_cmd = [str(node_executable), "--network", str(embedded_manifest), "--validate"]
     validated = subprocess.run(validation_cmd, env=env, text=True, capture_output=True, timeout=30, check=True)
     assert package["genesis"] in validated.stdout
-    manifest_arg = "Z:" + str(manifest).replace("/", "\\") if target.startswith("windows") else str(manifest)
+    manifest_arg = "Z:" + str(manifest).replace("/", "\\") if target.startswith("windows") and os.name != "nt" else str(manifest)
     cmd += ["--network", manifest_arg, "--seeds", f"127.0.0.1:{seed.p2p}", "--upnp=false"]
     log = open(ROOT / "build" / ("desktop-" + target + ".log"), "w")
     process = None
@@ -213,9 +219,10 @@ def exercise(package, work):
         node_log = (data / "node.log").read_text()
         assert token not in node_log and words not in node_log and PASSWORD not in node_log
         assert words.encode() not in (data / "wallet.key").read_bytes()
-        return {"target": target, "result": "PASS", "sha256": package["sha256"], "runtime": "Wine64 9.0 on Linux" if target.startswith("windows") else "native Linux x86_64",
+        runtime = "native Windows x86_64" if target.startswith("windows") and os.name == "nt" else "Wine64 9.0 on Linux" if target.startswith("windows") else "native Linux x86_64"
+        return {"target": target, "result": "PASS", "sha256": package["sha256"], "runtime": runtime,
             "checks": ["complete archive extraction and checksum", "final embedded manifest hash, timestamp, inscription and genesis validation", "embedded artwork, fonts and current UI", "paths with spaces", "single instance", "one-use browser authentication", "24-word encrypted wallet", "64-character Bech32m address", "three bundled pqday.com seeds", "mainnet CPU mining and 60-block maturity on a disposable inscribed genesis", "hybrid signed transfer", "known test solution rejected", "persistent random P2P port", "persistent restart", "manual peer saved and connected", "API restart replaces native process while launcher stays alive", "restart preserves balance and port, locks keys and invalidates old browser session", "password validation", "atomic wallet import without automatic backup", "clean launcher and node shutdown", "no secrets in logs"],
-            "nativeWindowsValidated": False if target.startswith("windows") else None}
+            "nativeWindowsValidated": True if target.startswith("windows") and os.name == "nt" else False if target.startswith("windows") else None}
     finally:
         if process and process.poll() is None:
             try:

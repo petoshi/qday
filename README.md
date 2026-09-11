@@ -328,6 +328,10 @@ archives contain native executables, the fixed mainnet manifest, the public
 docs and dependency licenses. They never contain a wallet key, seed phrase or
 API token.
 
+GitHub Actions builds Linux on Ubuntu and Windows on a native Windows runner.
+CI validates the archive, starts a keyless node, completes a live seed
+handshake and shuts it down. It never creates a wallet or runs the miner.
+
 ---
 
 ## 🚨 Read This Before You Act Surprised

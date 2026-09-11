@@ -5,7 +5,9 @@ Uses disposable genesis blocks with the exact mainnet rules; never logs tokens, 
 Leaves a concise result and node logs in build/smoke-report.json / smoke-*.log.
 """
 import json
+import os
 import pathlib
+import shutil
 import socket
 import subprocess
 import tempfile
@@ -16,6 +18,8 @@ from decimal import Decimal
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+GO = str(ROOT / ".tools/go/bin/go") if (ROOT / ".tools/go/bin/go").exists() else (shutil.which("go") or "go")
+NODE = ROOT / "build" / ("qday.exe" if os.name == "nt" else "qday")
 
 
 def port():
@@ -43,7 +47,7 @@ class Node:
         self.directory = directory
         self.http, self.p2p = port(), port()
         self.log = open(ROOT / "build" / f"smoke-{name}.log", "w")
-        self.args = [str(ROOT / "build/qday"), "--network", str(manifest), "--upnp=false", "--seeds", "", "--peers", "", "--data", str(directory),
+        self.args = [str(NODE), "--network", str(manifest), "--upnp=false", "--seeds", "", "--peers", "", "--data", str(directory),
                      "--http", f"127.0.0.1:{self.http}", "--p2p", f"127.0.0.1:{self.p2p}"]
         if peer:
             self.args += ["--peers", f"127.0.0.1:{peer.p2p}"]
@@ -82,7 +86,7 @@ class Node:
 
 
 def fixture(directory):
-    subprocess.run([str(ROOT / ".tools/go/bin/go"), "run", "./node/internal/testgenesis", str(directory)], cwd=ROOT, check=True)
+    subprocess.run([GO, "run", "./node/internal/testgenesis", str(directory)], cwd=ROOT, check=True)
     return directory / "test-mainnet.json", json.loads((directory / "test-owner.json").read_text())["phrase"]
 
 

@@ -1,0 +1,105 @@
+name: Native builds
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-builds-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: Linux x86-64
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.work
+          cache-dependency-path: '**/go.sum'
+
+      - name: Build Linux wallet archive
+        run: python3 scripts/package.py --manifest qday-mainnet.json --targets linux-amd64
+
+      - name: Verify archive checksum
+        working-directory: build/dist
+        run: sha256sum -c QDAY-Wallet-0.5.0-mainnet-linux-amd64.tar.gz.sha256
+
+      - name: Verify live mainnet startup
+        if: github.event_name != 'pull_request'
+        run: python3 scripts/mainnet-connect-smoke.py --target linux-amd64
+
+      - name: Upload Linux wallet
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: qday-wallet-linux-amd64
+          path: |
+            build/dist/QDAY-Wallet-0.5.0-mainnet-linux-amd64.tar.gz
+            build/dist/QDAY-Wallet-0.5.0-mainnet-linux-amd64.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+  windows:
+    name: Windows x86-64
+    runs-on: windows-2025
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.work
+          cache-dependency-path: '**/go.sum'
+
+      - name: Set up native Windows C compiler
+        id: msys2
+        uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884 # v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: mingw-w64-ucrt-x86_64-gcc
+
+      - name: Select native Windows C compiler
+        shell: pwsh
+        run: |
+          $compiler = '${{ steps.msys2.outputs['msys2-location'] }}\ucrt64\bin\gcc.exe'
+          if (-not (Test-Path $compiler)) { throw "Native C compiler was not installed" }
+          "QDAY_WINDOWS_CC=$compiler" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Build Windows wallet archive
+        shell: pwsh
+        run: python scripts/package.py --manifest qday-mainnet.json --targets windows-amd64
+
+      - name: Verify archive checksum
+        shell: pwsh
+        run: |
+          $archive = 'build/dist/QDAY-Wallet-0.5.0-mainnet-windows-amd64.zip'
+          $checksum = "$archive.sha256"
+          $expected = ((Get-Content $checksum -Raw).Trim() -split '\s+')[0].ToLowerInvariant()
+          $actual = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
+          if ($actual -ne $expected) { throw "Archive checksum mismatch" }
+
+      - name: Verify live mainnet startup
+        if: github.event_name != 'pull_request'
+        shell: pwsh
+        run: python scripts/mainnet-connect-smoke.py --target windows-amd64
+
+      - name: Upload Windows wallet
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: qday-wallet-windows-amd64
+          path: |
+            build/dist/QDAY-Wallet-0.5.0-mainnet-windows-amd64.zip
+            build/dist/QDAY-Wallet-0.5.0-mainnet-windows-amd64.zip.sha256
+          if-no-files-found: error
+          retention-days: 14

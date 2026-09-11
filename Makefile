@@ -13,6 +13,6 @@ smoke: build
 browser: build
 	node scripts/browser-smoke.cjs
 dist: build
-	python3 scripts/package.py --manifest $(MANIFEST) $(if $(SEEDS),--peers $(SEEDS))
+	python3 scripts/package.py --manifest $(MANIFEST) $(if $(TARGETS),--targets $(TARGETS)) $(if $(SEEDS),--peers $(SEEDS))
 desktop-test:
 	python3 scripts/desktop-smoke.py

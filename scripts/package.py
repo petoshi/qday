@@ -27,7 +27,8 @@ def build(target, out):
     flags = "-s -w"
     tags = "netgo,osusergo,sqlite_omit_load_extension"
     if system == "windows":
-        env["CC"] = os.environ.get("QDAY_WINDOWS_CC", "x86_64-w64-mingw32-gcc")
+        default_cc = "gcc" if os.name == "nt" else "x86_64-w64-mingw32-gcc"
+        env["CC"] = os.environ.get("QDAY_WINDOWS_CC", default_cc)
     else:
         # Pure Go DNS + static SQLite avoid a distro-specific glibc dependency.
         flags += " -linkmode=external -extldflags=-static"
