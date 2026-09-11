@@ -1,6 +1,7 @@
 ![QDAY logo](node/qday/web/assets/logo.png)
 
-# ☠️ QDAY — The PoW Coin Waiting for Its Own Funeral ☠️
+# ☠️ QDAY ☠️
+# The PoW Coin Waiting for Its Own Funeral ☠️
 
 **I launched an anti-post-quantum proof-of-work coin with one job: stay alive
 until the day its own classical cryptography dies. Most chains would call that

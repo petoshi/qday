@@ -2,8 +2,8 @@ name: Native builds
 
 on:
   push:
-    branches: [main]
-  pull_request:
+    tags:
+      - 'v*'
   workflow_dispatch:
 
 permissions:
@@ -51,7 +51,6 @@ jobs:
         run: python3 scripts/verify-package.py --target '${{ matrix.target }}'
 
       - name: Verify live mainnet startup
-        if: github.event_name != 'pull_request'
         run: python3 scripts/mainnet-connect-smoke.py --target '${{ matrix.target }}'
 
       - name: Upload release archives
@@ -104,7 +103,6 @@ jobs:
         run: python scripts/verify-package.py --target windows-amd64
 
       - name: Verify live mainnet startup
-        if: github.event_name != 'pull_request'
         shell: pwsh
         run: python scripts/mainnet-connect-smoke.py --target windows-amd64
 
