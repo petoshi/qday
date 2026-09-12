@@ -58,10 +58,10 @@ jobs:
         with:
           name: qday-release-${{ matrix.target }}
           path: |
-            build/dist/QDAY-Wallet-0.6.0-mainnet-${{ matrix.target }}.tar.gz
-            build/dist/QDAY-Wallet-0.6.0-mainnet-${{ matrix.target }}.tar.gz.sha256
-            build/dist/QDAY-Node-0.6.0-mainnet-${{ matrix.target }}.tar.gz
-            build/dist/QDAY-Node-0.6.0-mainnet-${{ matrix.target }}.tar.gz.sha256
+            build/dist/QDAY-Wallet-0.7.0-mainnet-${{ matrix.target }}.tar.gz
+            build/dist/QDAY-Wallet-0.7.0-mainnet-${{ matrix.target }}.tar.gz.sha256
+            build/dist/QDAY-Node-0.7.0-mainnet-${{ matrix.target }}.tar.gz
+            build/dist/QDAY-Node-0.7.0-mainnet-${{ matrix.target }}.tar.gz.sha256
           if-no-files-found: error
           retention-days: 14
 
@@ -111,9 +111,9 @@ jobs:
         with:
           name: qday-release-windows-amd64
           path: |
-            build/dist/QDAY-Wallet-0.6.0-mainnet-windows-amd64.zip
-            build/dist/QDAY-Wallet-0.6.0-mainnet-windows-amd64.zip.sha256
-            build/dist/QDAY-Node-0.6.0-mainnet-windows-amd64.zip
-            build/dist/QDAY-Node-0.6.0-mainnet-windows-amd64.zip.sha256
+            build/dist/QDAY-Wallet-0.7.0-mainnet-windows-amd64.zip
+            build/dist/QDAY-Wallet-0.7.0-mainnet-windows-amd64.zip.sha256
+            build/dist/QDAY-Node-0.7.0-mainnet-windows-amd64.zip
+            build/dist/QDAY-Node-0.7.0-mainnet-windows-amd64.zip.sha256
           if-no-files-found: error
           retention-days: 14
