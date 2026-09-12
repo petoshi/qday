@@ -51,6 +51,8 @@ type ChainManager interface {
 	PoolTransaction(txid types.TransactionID) (types.Transaction, bool)
 	AddPoolTransactions(txns []types.Transaction) (bool, error)
 	V2PoolTransaction(txid types.TransactionID) (types.V2Transaction, bool)
+	V2PoolTransactions() []types.V2Transaction
+	V2TransactionSet(basis types.ChainIndex, txn types.V2Transaction) (types.ChainIndex, []types.V2Transaction, error)
 	AddV2PoolTransactions(basis types.ChainIndex, txns []types.V2Transaction) (bool, error)
 	TransactionsForPartialBlock(missing []types.Hash256) ([]types.Transaction, []types.V2Transaction)
 }
@@ -935,6 +937,147 @@ func (s *Syncer) syncLoop(ctx context.Context) error {
 	}
 }
 
+const txpoolRefreshInterval = 10 * time.Minute
+
+type txpoolPeerState struct {
+	fingerprint types.Hash256
+	relayedAt   time.Time
+	relayed     bool
+}
+
+type txpoolRelaySet struct {
+	basis types.ChainIndex
+	txns  []types.V2Transaction
+}
+
+func txpoolFingerprint(txns []types.V2Transaction) types.Hash256 {
+	h := types.NewHasher()
+	h.E.WriteUint64(uint64(len(txns)))
+	for i := range txns {
+		txns[i].ID().EncodeTo(h.E)
+	}
+	return h.Sum()
+}
+
+func (s *Syncer) txpoolRelayPlan(basis types.ChainIndex, txns []types.V2Transaction) ([]txpoolRelaySet, error) {
+	sets := make([]txpoolRelaySet, 0, len(txns))
+	for i := range txns {
+		setBasis, set, err := s.cm.V2TransactionSet(basis, txns[i])
+		if err != nil {
+			return nil, err
+		} else if setBasis != basis {
+			return nil, errors.New("chain changed while preparing transaction pool relay")
+		}
+		sets = append(sets, txpoolRelaySet{basis: setBasis, txns: set})
+	}
+	return sets, nil
+}
+
+func (s *Syncer) relayTxpoolToPeer(p *Peer, cs consensus.State, sets []txpoolRelaySet) error {
+	headers, remaining, err := p.SendHeaders(cs, 1, s.config.SendHeadersTimeout)
+	if err != nil {
+		return fmt.Errorf("peer has not reached transaction pool basis: %w", err)
+	} else if len(headers) != 0 || remaining != 0 {
+		return errors.New("peer is ahead of transaction pool basis")
+	}
+	for _, set := range sets {
+		if err := p.RelayV2TransactionSet(set.basis, set.txns, s.config.RelayTransactionSetTimeout); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// txpoolLoop offers the current transaction pool to peers that connected after
+// its transactions were first announced. Ordinary transaction relay suppresses
+// known sets to prevent gossip loops, so without this pass a restarted or newly
+// connected node can remain unaware of valid pending transactions indefinitely.
+func (s *Syncer) txpoolLoop(ctx context.Context) error {
+	ticker := time.NewTicker(s.config.SyncInterval)
+	defer ticker.Stop()
+
+	states := make(map[*Peer]txpoolPeerState)
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+		}
+
+		now := time.Now()
+		peers := s.Peers()
+		active := make(map[*Peer]bool, len(peers))
+		for _, p := range peers {
+			if p.Err() != nil {
+				continue
+			}
+			active[p] = true
+			state := states[p]
+			if !p.Synced() {
+				state.relayed = false
+			}
+			states[p] = state
+		}
+		for p := range states {
+			if !active[p] {
+				delete(states, p)
+			}
+		}
+
+		basis := s.cm.Tip()
+		txns := s.cm.V2PoolTransactions()
+		if len(txns) == 0 || s.cm.Tip() != basis {
+			continue
+		}
+		fingerprint := txpoolFingerprint(txns)
+		var targets []*Peer
+		for p, state := range states {
+			if !p.Synced() {
+				continue
+			}
+			if !state.relayed || state.fingerprint != fingerprint || now.Sub(state.relayedAt) >= txpoolRefreshInterval {
+				targets = append(targets, p)
+			}
+		}
+		if len(targets) == 0 {
+			continue
+		}
+
+		sets, err := s.txpoolRelayPlan(basis, txns)
+		if err != nil {
+			s.log.Debug("failed to prepare transaction pool relay", zap.Error(err))
+			continue
+		}
+		cs, ok := s.cm.State(basis.ID)
+		if !ok {
+			continue
+		}
+		type result struct {
+			peer *Peer
+			err  error
+		}
+		results := make(chan result, len(targets))
+		for _, p := range targets {
+			go func(p *Peer) {
+				results <- result{p, s.relayTxpoolToPeer(p, cs, sets)}
+			}(p)
+		}
+		for range targets {
+			result := <-results
+			if result.err != nil {
+				s.log.Debug("failed to synchronize transaction pool", zap.Stringer("peer", result.peer), zap.Error(result.err))
+				continue
+			}
+			if state, ok := states[result.peer]; ok {
+				state.fingerprint = fingerprint
+				state.relayedAt = now
+				state.relayed = true
+				states[result.peer] = state
+			}
+		}
+	}
+}
+
 // Run spawns goroutines for accepting inbound connections, forming outbound
 // connections, and syncing the blockchain from active peers. It blocks until an
 // error occurs, upon which all connections are closed and goroutines are
@@ -947,7 +1090,8 @@ func (s *Syncer) Run() error {
 	defer done()
 
 	errChan := make(chan error)
-	for _, fn := range []func(context.Context) error{s.acceptLoop, s.peerLoop, s.syncLoop} {
+	loops := []func(context.Context) error{s.acceptLoop, s.peerLoop, s.syncLoop, s.txpoolLoop}
+	for _, fn := range loops {
 		go func() {
 			done, err := s.tg.Add()
 			if err != nil {
@@ -967,8 +1111,9 @@ func (s *Syncer) Run() error {
 		p.Close()
 	}
 	s.mu.Unlock()
-	<-errChan
-	<-errChan
+	for range len(loops) - 1 {
+		<-errChan
+	}
 
 	// wait for all peer goroutines to exit
 	s.mu.Lock()
