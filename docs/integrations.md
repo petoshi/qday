@@ -20,7 +20,8 @@ This guide calls `h + 6` the **QDAY block**.
 | Sia addresses | No | Parse and emit 64-character `qday1p` Bech32m addresses |
 | Sia wallet keys | No | Derive both QDAY keys and sign every input with both |
 | Sia contracts and siafunds | No | QDAY consensus rejects them |
-| Sia Stratum or pool endpoint | No | QDAY 0.6.0 does not ship a Stratum server |
+| Sia `getblocktemplate` client | Partly | Use QDAY's authenticated local endpoints and v2 templates |
+| Sia Stratum server | No | Connect the pool controller to QDAY `getblocktemplate` |
 | Sia explorer assumptions | No | Track the QDAY block, changing values, shields and decay |
 | Sia JSON APIs | No | The shipped API is local and controls one wallet |
 | Supply RPC | No | Read QDAY issuance and burns from `GET /api/supply` |
@@ -43,8 +44,43 @@ parentID[32] || nonceLE64 || timestampLE64 || commitment[32]
 Every 64-bit nonce is eligible. Interpret the resulting 32-byte hash with
 QDAY's work ordering and accept it when `types.BlockID.CmpWork(target) >= 0`.
 
-A pool controller must construct a complete QDAY block candidate; a Sia
-coinbase transaction is not valid on QDAY. The controller must:
+Run the QDAY node and pool controller on the same machine. The node API remains
+on loopback and requires the bearer token stored in its data directory. Create
+or import the pool payout wallet and unlock it, then request work with:
+
+```http
+POST /api/miner/getblocktemplate
+Authorization: Bearer <api.token>
+Content-Type: application/json
+
+{"longpollid":""}
+```
+
+The response follows Sia `minerd`'s version 2 template shape and includes an
+additional `header` field containing the complete 80-byte work header as hex.
+It already contains the mandatory QDAY miner marker, all selected mempool
+transactions, their fees, the payout and the commitment. Repeating the request
+with its `longpollid` returns when the chain or mempool changes, or after 30
+seconds. A pool must distribute fresh work when that request returns.
+
+After finding a valid nonce, reconstruct the complete v2 block and submit its
+Sia binary encoding as hexadecimal:
+
+```http
+POST /api/miner/submitblock
+Authorization: Bearer <api.token>
+Content-Type: application/json
+
+{"params":["<hex-encoded complete block>"]}
+```
+
+The node validates the block and relays it. It rejects a header submitted
+without the payout, marker and transactions committed by that header. QDAY does
+not ship a Stratum server; a pool controller translates its own worker protocol
+to these local endpoints.
+
+Pool software that constructs candidates without the API must perform the same
+steps. A Sia coinbase transaction is not valid on QDAY:
 
 1. Read the current chain state, parent block and mempool basis. The basis is
    the chain index against which the selected transactions are proven.
@@ -62,10 +98,13 @@ coinbase transaction is not valid on QDAY. The controller must:
    QDAY chain manager.
 
 The reference candidate builder is `coreutils/qday.Candidate`; the reference
-CPU nonce search is `coreutils/qday.Mine`. QDAY 0.6.0 has no
-`getblocktemplate` or Stratum endpoint, so a pool must provide its own job and
-share service. Existing ASIC or GPU controllers can reuse the raw BLAKE2b
-search only when they accept an externally supplied 80-byte header and target.
+CPU nonce search is `coreutils/qday.Mine`. Existing ASIC or GPU controllers can
+reuse the raw BLAKE2b search when they accept an externally supplied 80-byte
+header and target. See the [template and submission
+implementation](../node/qday/mining.go) and [candidate
+builder](../coreutils/qday/miner.go). The [end-to-end template
+test](../node/qday/mining_test.go) decodes a response, searches the header and
+submits the complete block.
 
 Starting with the QDAY block, every transfer in a candidate must contain valid
 20-bit DEFEND work, and each input contributes its value after any decay. Use

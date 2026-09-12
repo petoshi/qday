@@ -143,7 +143,7 @@ I said “no. or maybe.” Here is the answer in the chain where it belongs:
 qday1pdsa0ezy7y3nnmnxm0tx74q2kd9acvzs8329wfd2n6ycqnmygtt9stpwtsr
 ```
 
-Then BLAKE2b crossed kH/s, MH/s and GH/s. Fine. The premine found a job.
+Then BLAKE2b crossed kH/s, MH/s, GH/s and TH/s. Fine. The premine found a job.
 
 Every time stable network hashrate earns a new SI prefix, I burn 10% of whatever
 premine is left.
@@ -153,24 +153,25 @@ premine is left.
 | KILO, kH/s | 50,000 QDAY |
 | MEGA, MH/s | 45,000 QDAY |
 | GIGA, GH/s | 40,500 QDAY |
-| TERA, TH/s | 36,450 QDAY next |
+| TERA, TH/s | 36,450 QDAY |
+| PETA, PH/s | 32,805 QDAY next |
 
-**135,500 QDAY is permanently dead.** The premine address now holds exactly
-**364,499.999 QDAY**: 364,500 after the burns, minus the 0.001 QDAY transaction
-fee that put the first burn on-chain.
+**171,950 QDAY is permanently dead.** The premine address now holds exactly
+**328,049.998 QDAY**: 328,050 after the burns, minus the two 0.001 QDAY
+transaction fees that put them on-chain.
 
-[View the burn transaction](https://explorer.pqday.com/transaction/9fc94d87d7d35185ba04919804b56a97368043c570bcd3d85d4462e4aa704151).
+[View the latest burn transaction](https://explorer.pqday.com/transaction/583d8e57be36a8ad694e401a51775339dba40002d68334ee3139830be8824089).
 Make the number bigger. Make my premine smaller.
 
 The genesis allocation was about **5.88%** of the maximum 8,500,000 QDAY issued
 by genesis and the first 1,000,000 block rewards. The remaining address balance
-is about **4.29%** of that maximum. There was no presale and no VC allocation
+is about **3.86%** of that maximum. There was no presale and no VC allocation
 hidden behind a prettier word.
 
 The issuance cap remains 8,500,000 QDAY. Confirmed burns reduce current supply,
-so after this burn no more than 8,364,500 QDAY can remain when block rewards end,
+so after these burns no more than 8,328,050 QDAY can remain when block rewards end,
 before any later burns or decay. After PQ Day that amount displays as
-8,364,500,000,000 QDAY. The multiplier is a unit change. Nothing is printed.
+8,328,050,000,000 QDAY. The multiplier is a unit change. Nothing is printed.
 
 ---
 
@@ -264,9 +265,10 @@ luck. A 60-second target is a network average, not a promise that your laptop
 gets paid every minute.
 
 QDAY does not pretend to be ASIC-resistant. BLAKE2b hardware can participate.
-A pool can reuse the raw 80-byte BLAKE2b search, but it must build QDAY block
-templates and validate QDAY transactions. Sia's coinbase and mempool rules are
-not enough. Pool details live in
+The node provides authenticated `getblocktemplate` and `submitblock` endpoints
+that build candidates from the QDAY mempool. A pool can reuse the raw 80-byte
+BLAKE2b search while the node handles QDAY's marker, transaction validation,
+fees and commitment. Pool details live in
 [`docs/integrations.md`](docs/integrations.md).
 
 The three bootstrap servers help wallets find the network. They do not mine.

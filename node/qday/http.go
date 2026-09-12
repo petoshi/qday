@@ -117,6 +117,46 @@ func (s *Service) Handler(token string, listenAddress string) http.Handler {
 			respond(v, err)
 			return
 		}
+		if r.Method == http.MethodPost && r.URL.Path == "/api/miner/getblocktemplate" {
+			if r.Header.Get("Content-Type") != "application/json" {
+				http.Error(w, "POST application/json required", http.StatusMethodNotAllowed)
+				return
+			}
+			var body MiningTemplateRequest
+			decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024))
+			decoder.DisallowUnknownFields()
+			if err := decoder.Decode(&body); err != nil {
+				respond(nil, errors.New("invalid request body"))
+				return
+			}
+			if err := decoder.Decode(new(any)); err != io.EOF {
+				respond(nil, errors.New("trailing request body"))
+				return
+			}
+			value, err := s.MiningTemplate(r.Context(), body.LongPollID)
+			respond(value, err)
+			return
+		}
+		if r.Method == http.MethodPost && r.URL.Path == "/api/miner/submitblock" {
+			if r.Header.Get("Content-Type") != "application/json" {
+				http.Error(w, "POST application/json required", http.StatusMethodNotAllowed)
+				return
+			}
+			var body MiningSubmitBlockRequest
+			decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<20))
+			decoder.DisallowUnknownFields()
+			if err := decoder.Decode(&body); err != nil || len(body.Params) != 1 {
+				respond(nil, errors.New("request must contain one hexadecimal block in params"))
+				return
+			}
+			if err := decoder.Decode(new(any)); err != io.EOF {
+				respond(nil, errors.New("trailing request body"))
+				return
+			}
+			id, err := s.SubmitMiningBlock(body.Params[0])
+			respond(map[string]any{"block": id}, err)
+			return
+		}
 		if r.Method != "POST" || r.Header.Get("Content-Type") != "application/json" {
 			http.Error(w, "POST application/json required", http.StatusMethodNotAllowed)
 			return

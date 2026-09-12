@@ -82,6 +82,7 @@ func (s *Service) Restore(ctx context.Context, password, phrase, replaceAddress 
 	s.keys, s.public, s.walletID = &keys, keys.Public.Address(), id
 	s.lastError = ""
 	s.mu.Unlock()
+	s.invalidateMiningTemplate()
 	adopted = true
 	address := keys.Public.String()
 	if runtime.GOOS != "windows" {

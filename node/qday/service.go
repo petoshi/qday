@@ -28,35 +28,44 @@ import (
 // Service owns the local wallet and explicit CPU activity. Secret backups
 // require creation or an explicit, password-authenticated recovery request.
 type Service struct {
-	CM               *chain.Manager
-	WM               *wallet.Manager
-	Syncer           *syncer.Syncer
-	PortMapping      *portmap.Manager
-	RestartEnabled   bool
-	Manifest         chain.QdayManifest
-	path             string
-	ctx              context.Context
-	cancel           context.CancelFunc
-	mu               sync.Mutex
-	control          sync.Mutex
-	op               sync.Mutex
-	keys             *types.QdayPrivateKeys
-	public           types.QdayAddress
-	walletID         wallet.ID
-	runCancel        context.CancelFunc
-	runDone          chan struct{}
-	mode             string
-	threads          int
-	started          time.Time
-	lastError        string
-	hashes           atomic.Uint64
-	blocks           atomic.Uint64
-	restartRequested atomic.Bool
-	browser          browserSessions
-	supplyMu         sync.Mutex
-	supplyIndex      types.ChainIndex
-	supplyStatus     SupplyStatus
-	supplyCached     bool
+	CM                *chain.Manager
+	WM                *wallet.Manager
+	Syncer            *syncer.Syncer
+	PortMapping       *portmap.Manager
+	RestartEnabled    bool
+	Manifest          chain.QdayManifest
+	path              string
+	ctx               context.Context
+	cancel            context.CancelFunc
+	mu                sync.Mutex
+	control           sync.Mutex
+	op                sync.Mutex
+	keys              *types.QdayPrivateKeys
+	public            types.QdayAddress
+	walletID          wallet.ID
+	runCancel         context.CancelFunc
+	runDone           chan struct{}
+	mode              string
+	threads           int
+	started           time.Time
+	lastError         string
+	hashes            atomic.Uint64
+	blocks            atomic.Uint64
+	restartRequested  atomic.Bool
+	browser           browserSessions
+	supplyMu          sync.Mutex
+	supplyIndex       types.ChainIndex
+	supplyStatus      SupplyStatus
+	supplyCached      bool
+	miningMu          sync.Mutex
+	miningTemplate    *cachedMiningTemplate
+	miningInvalidated chan struct{}
+	stopMiningWatch   func()
+	rebroadcastPath   string
+	rebroadcastMu     sync.Mutex
+	rebroadcasts      map[types.TransactionID]pendingBroadcast
+	rebroadcastWake   chan struct{}
+	rebroadcastDone   chan struct{}
 }
 
 type SupplyAmount struct {
@@ -81,17 +90,43 @@ type SupplyStatus struct {
 
 func NewService(ctx context.Context, dir string, cm *chain.Manager, wm *wallet.Manager, sy *syncer.Syncer, manifest chain.QdayManifest) (*Service, error) {
 	ctx, cancel := context.WithCancel(ctx)
-	s := &Service{CM: cm, WM: wm, Syncer: sy, Manifest: manifest, path: filepath.Join(dir, "wallet.key"), ctx: ctx, cancel: cancel, mode: "STOP"}
+	s := &Service{
+		CM:                cm,
+		WM:                wm,
+		Syncer:            sy,
+		Manifest:          manifest,
+		path:              filepath.Join(dir, "wallet.key"),
+		ctx:               ctx,
+		cancel:            cancel,
+		mode:              "STOP",
+		miningInvalidated: make(chan struct{}),
+		rebroadcastPath:   filepath.Join(dir, "pending-transactions.json"),
+		rebroadcasts:      make(map[types.TransactionID]pendingBroadcast),
+		rebroadcastWake:   make(chan struct{}, 1),
+		rebroadcastDone:   make(chan struct{}),
+	}
+	s.stopMiningWatch = cm.OnPoolChange(s.invalidateMiningTemplate)
 	if k, err := readKey(s.path); err == nil {
 		s.public, err = types.ParseQdayAddress(k.Address)
 		if err != nil {
+			s.stopMiningWatch()
 			cancel()
 			return nil, err
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
+		s.stopMiningWatch()
 		cancel()
 		return nil, err
 	}
+	if err := s.loadPendingBroadcasts(); err != nil {
+		s.stopMiningWatch()
+		cancel()
+		return nil, err
+	}
+	go func() {
+		defer close(s.rebroadcastDone)
+		s.runRebroadcaster()
+	}()
 	return s, nil
 }
 
@@ -142,6 +177,7 @@ func (s *Service) attach(ctx context.Context, keys *types.QdayPrivateKeys) error
 	s.public = keys.Public.Address()
 	s.walletID = id
 	s.mu.Unlock()
+	s.invalidateMiningTemplate()
 	return nil
 }
 
@@ -249,8 +285,17 @@ func (s *Service) Lock() {
 	}
 	s.keys = nil
 	s.mu.Unlock()
+	s.invalidateMiningTemplate()
 }
-func (s *Service) Close() { s.cancel(); s.Lock() }
+func (s *Service) Close() {
+	s.cancel()
+	<-s.rebroadcastDone
+	if s.stopMiningWatch != nil {
+		s.stopMiningWatch()
+		s.stopMiningWatch = nil
+	}
+	s.Lock()
+}
 
 // Done signals an authenticated request to quit the local application.
 func (s *Service) Done() <-chan struct{} { return s.ctx.Done() }
@@ -594,6 +639,9 @@ func (s *Service) submitFor(ctx context.Context, from string, to types.QdayAddre
 	}
 	if _, err = s.CM.AddV2PoolTransactions(basis, txns); err != nil {
 		return types.TransactionID{}, err
+	}
+	if err := s.rememberBroadcast(basis, txns); err != nil {
+		s.setError(fmt.Errorf("failed to save pending transaction for rebroadcast: %w", err))
 	}
 	if s.Syncer != nil {
 		s.setError(s.Syncer.BroadcastV2TransactionSet(basis, txns))

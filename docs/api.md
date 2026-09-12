@@ -1,9 +1,10 @@
 # Local wallet API
 
-QDAY 0.6.0 exposes an HTTP API for the bundled desktop wallet. It listens on
+QDAY exposes an HTTP API for the bundled desktop wallet. It listens on
 the local computer only, normally at `http://127.0.0.1:19770`. The API controls
-one wallet and its node. It does not provide the block-history and multi-wallet
-operations required by exchanges, explorers or mining pools.
+one wallet and its node. It also provides transaction-aware work to a pool
+controller running on the same computer. It does not provide the block-history
+or multi-wallet operations required by exchanges and explorers.
 
 The API uses two related QDAY values. `qdayHeight` is zero until a valid
 challenge proof is confirmed; it then contains the scheduled QDAY block.
@@ -21,8 +22,10 @@ Authorization: Bearer <token>
 
 Browser session tokens use the same header. Every POST request must use
 `Content-Type: application/json`. The server rejects unknown JSON fields,
-extra values after the request object and bodies larger than 8,192 bytes. The
-session endpoint has a separate 256-byte limit.
+extra values after the request object and ordinary bodies larger than 8,192
+bytes. The session endpoint has a 256-byte limit, `getblocktemplate` has a
+1,024-byte limit and `submitblock` accepts up to 8 MiB of binary block data
+encoded as hexadecimal JSON.
 
 The `Host` header must name the configured local listener as `127.0.0.1`,
 `localhost` or `::1` with the correct port. If the request has an `Origin`
@@ -273,6 +276,12 @@ with both keys, places the transaction in its mempool and broadcasts it.
 {"transaction":"<64-hex-character transaction ID>"}
 ```
 
+The wallet saves locally created transactions until they confirm and
+rebroadcasts them after chain changes, periodically, and after a node restart.
+It stops rebroadcasting after 48 hours. The chain mempool has no fixed expiry;
+a valid transaction can remain pending longer if no miner includes it. See the
+[rebroadcast implementation](../node/qday/rebroadcast.go).
+
 ### `POST /api/burn`
 
 ```json
@@ -345,6 +354,56 @@ outputs receive new shields. The endpoint works only after the QDAY event and
 returns an error when no output is within the final 360 blocks of its shield.
 
 ## Mining and node control
+
+### `POST /api/miner/getblocktemplate`
+
+Returns a QDAY v2 block candidate built from the current selected tip and local
+mempool. The payout wallet must be unlocked. An empty request returns
+immediately:
+
+```json
+{"longpollid":""}
+```
+
+The response follows Sia `minerd`'s BIP22-shaped template and adds `header`, the
+complete 80-byte BLAKE2b work header encoded as 160 hexadecimal characters:
+
+```json
+{
+  "header":"<160 hex characters>",
+  "commitment":"<64 hex characters>",
+  "transactions":[
+    {"data":"<hex>","hash":"","txid":"<64 hex characters>","depends":null,"fee":0,"sigops":0,"txtype":"2"}
+  ],
+  "minerpayout":[{"data":"<hex>","hash":"","txid":"","depends":null,"fee":0,"sigops":0,"txtype":""}],
+  "previousblockhash":"<64 hex characters>",
+  "longpollid":"<32 hex characters>",
+  "target":"<64 hex characters>",
+  "height":1001,
+  "curtime":1789234567,
+  "version":2,
+  "bits":"07012345"
+}
+```
+
+Transaction zero is the mandatory QDAY miner marker. The remaining entries are
+valid mempool transactions selected in dependency order. Their fees are added
+to `minerpayout`. Supplying the current `longpollid` holds the request until the
+tip or mempool changes, or until the 30-second template age expires.
+
+### `POST /api/miner/submitblock`
+
+Submits a solved, Sia-encoded QDAY v2 block and relays it to peers:
+
+```json
+{"params":["<hex-encoded complete block>"]}
+```
+
+The node performs full QDAY consensus validation before returning the block ID.
+The endpoint does not accept a header without its corresponding payout, miner
+marker and transactions.
+
+Source: [template construction and block submission](../node/qday/mining.go).
 
 ### `POST /api/start`
 
