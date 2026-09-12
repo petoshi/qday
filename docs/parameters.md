@@ -101,6 +101,9 @@ scalar `x` for which `x·G` equals that point. The first valid proof transaction
 starts the QDAY countdown. If miners include it in block `h`, QDAY begins at
 block `h + 6`.
 
+The point's public NUMS derivation, complete transcript and independent verifier
+are documented in [`canary.md`](canary.md).
+
 | Parameter | Value |
 | --- | --- |
 | Challenge group | prime-order Edwards25519 subgroup |

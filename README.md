@@ -87,6 +87,20 @@ Challenge point:
 7343aaaab7bb999347740b9e1932f5487046f56b1566ab23cac0b129adefb771
 ```
 
+The QDAY canary is a reproducible NUMS point. No secret scalar is used anywhere
+in its construction. Anyone can verify that generating this point did not
+reveal its discrete logarithm.
+
+Reproduce the derivation and compare the result with the mainnet manifest:
+
+```bash
+go run ./core/cmd/qday-canary -manifest ./qday-mainnet.json
+```
+
+The command derives the challenge above and finishes with `match: true`. The
+complete algorithm, transcript and test vectors are in
+[`docs/canary.md`](docs/canary.md).
+
 ---
 
 ## 🥂 After QDAY
@@ -120,7 +134,7 @@ shits about your alarm clock.
 
 ---
 
-## 🤑 Yes, There Is a Premine
+## 🔥 Yes, There is a Premine, but
 
 I said “no. or maybe.” Here is the answer in the chain where it belongs:
 
@@ -129,13 +143,34 @@ I said “no. or maybe.” Here is the answer in the chain where it belongs:
 qday1pdsa0ezy7y3nnmnxm0tx74q2kd9acvzs8329wfd2n6ycqnmygtt9stpwtsr
 ```
 
-That is about **5.88%** of the maximum 8,500,000 QDAY created by genesis and the
-first 1,000,000 block rewards, measured in the original denomination. There was
-no presale and no VC allocation hidden behind a prettier word.
+Then BLAKE2b crossed kH/s, MH/s and GH/s. Fine. The premine found a job.
 
-After QDAY, the same maximum atomic issuance is displayed as
-8,500,000,000,000 QDAY before any decay. The multiplier is a unit change. Fees
-create nothing. Decay can permanently destroy spendable supply.
+Every time stable network hashrate earns a new SI prefix, I burn 10% of whatever
+premine is left.
+
+| Prefix | Burn |
+| --- | ---: |
+| KILO, kH/s | 50,000 QDAY |
+| MEGA, MH/s | 45,000 QDAY |
+| GIGA, GH/s | 40,500 QDAY |
+| TERA, TH/s | 36,450 QDAY next |
+
+**135,500 QDAY is permanently dead.** The premine address now holds exactly
+**364,499.999 QDAY**: 364,500 after the burns, minus the 0.001 QDAY transaction
+fee that put the first burn on-chain.
+
+[View the burn transaction](https://explorer.pqday.com/transaction/9fc94d87d7d35185ba04919804b56a97368043c570bcd3d85d4462e4aa704151).
+Make the number bigger. Make my premine smaller.
+
+The genesis allocation was about **5.88%** of the maximum 8,500,000 QDAY issued
+by genesis and the first 1,000,000 block rewards. The remaining address balance
+is about **4.29%** of that maximum. There was no presale and no VC allocation
+hidden behind a prettier word.
+
+The issuance cap remains 8,500,000 QDAY. Confirmed burns reduce current supply,
+so after this burn no more than 8,364,500 QDAY can remain when block rewards end,
+before any later burns or decay. After PQ Day that amount displays as
+8,364,500,000,000 QDAY. The multiplier is a unit change. Nothing is printed.
 
 ---
 
@@ -322,6 +357,7 @@ its own genesis and network marker. The pieces worth knowing:
 The exact rules are short enough to read:
 
 - [`docs/parameters.md`](docs/parameters.md) — every fixed mainnet number.
+- [`docs/canary.md`](docs/canary.md) — reproducible NUMS derivation and verifier.
 - [`docs/consensus.md`](docs/consensus.md) — blocks, signatures, proof, QDAY,
   denomination, shields, decay and DEFEND.
 - [`docs/protocol.md`](docs/protocol.md) — P2P, addresses, seed phrase, key file
