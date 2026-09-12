@@ -113,6 +113,8 @@ summary {
   padding: 0 4vw;
   border-bottom: 1px solid rgba(255, 255, 255, 0.12);
   background: linear-gradient(180deg, rgba(5, 4, 6, 0.94), rgba(5, 4, 6, 0.35));
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.14);
+  backdrop-filter: blur(8px);
 }
 
 .brand {
@@ -160,6 +162,7 @@ summary {
   font-weight: 800;
   letter-spacing: 0.16em;
   transition: background 180ms ease, color 180ms ease;
+  box-shadow: 0 8px 24px rgba(231, 193, 120, 0.12);
 }
 
 .header-download:hover {
@@ -300,6 +303,7 @@ h3 {
   border-color: var(--gold);
   background: var(--gold);
   color: var(--black);
+  box-shadow: 0 12px 34px rgba(231, 193, 120, 0.13);
 }
 
 .button-primary:hover {
@@ -314,6 +318,13 @@ h3 {
 .button-ghost:hover {
   border-color: rgba(246, 238, 226, 0.48);
   background: rgba(246, 238, 226, 0.06);
+}
+
+.button:active,
+.header-download:active,
+.dialog-close:active,
+.download-arrow:active {
+  transform: translateY(1px) scale(0.99);
 }
 
 .hero-facts {
@@ -360,7 +371,7 @@ h3 {
 
 .ticker {
   display: flex;
-  width: max-content;
+  width: 100%;
   overflow: hidden;
   border-bottom: 1px solid var(--line);
   background: var(--gold);
@@ -424,6 +435,7 @@ h3 {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   border: 1px solid var(--line);
+  box-shadow: 0 28px 70px rgba(0, 0, 0, 0.14);
 }
 
 .ritual-card {
@@ -731,6 +743,7 @@ h3 {
   min-width: 0;
   border: 1px solid var(--line);
   background: rgba(255,255,255,0.018);
+  box-shadow: 0 28px 80px rgba(0,0,0,0.22);
 }
 
 .premine-balance {
@@ -1047,18 +1060,20 @@ footer div a:hover {
 }
 
 .dialog-close {
-  position: absolute;
+  position: sticky;
   z-index: 2;
   top: 1.25rem;
-  right: 1.25rem;
+  display: block;
   width: 42px;
   height: 42px;
+  margin: 0 0 -42px auto;
   border: 1px solid var(--line);
   background: rgba(0,0,0,0.3);
   cursor: pointer;
   color: var(--bone);
   font-size: 1.6rem;
   line-height: 1;
+  transition: border-color 160ms ease, color 160ms ease, background 160ms ease, transform 160ms ease;
 }
 
 .dialog-close:hover {
@@ -1170,6 +1185,11 @@ footer div a:hover {
   border-right: 1px solid var(--line);
   border-bottom: 1px solid var(--line);
   background: rgba(255,255,255,0.012);
+  transition: background 160ms ease, border-color 160ms ease;
+}
+
+.download-card:hover {
+  background: rgba(255,255,255,0.035);
 }
 
 .download-card.recommended {
@@ -1223,6 +1243,7 @@ footer div a:hover {
   background: var(--gold);
   color: var(--black);
   font-weight: 800;
+  transition: background 160ms ease, border-color 160ms ease, transform 160ms ease;
 }
 
 .download-arrow:hover {
@@ -1398,26 +1419,29 @@ footer div a:hover {
 @media (max-width: 760px) {
   .site-header {
     height: 70px;
-    padding: 0 1rem;
+    gap: 0.5rem;
+    padding: 0 0.75rem;
   }
 
   .brand {
-    width: 105px;
-    height: 50px;
+    width: 96px;
+    height: 48px;
   }
 
   .site-header nav {
-    gap: 0.55rem;
+    gap: 0.4rem;
   }
 
   .site-header .source-link {
     border: 1px solid var(--line);
-    padding: 0.62rem 0.7rem;
+    min-height: 42px;
+    padding: 0.6rem 0.58rem;
     font-size: 0.58rem;
   }
 
   .header-download {
-    padding: 0.64rem 0.75rem;
+    min-height: 42px;
+    padding: 0.62rem 0.65rem;
     font-size: 0.58rem;
   }
 
@@ -1693,6 +1717,49 @@ footer div a:hover {
   .download-foot {
     align-items: flex-start;
     flex-direction: column;
+  }
+}
+
+@media (max-width: 360px) {
+  .brand {
+    width: 82px;
+  }
+
+  .site-header .source-link,
+  .header-download {
+    padding-right: 0.5rem;
+    padding-left: 0.5rem;
+    font-size: 0.54rem;
+  }
+
+  .hero {
+    padding-right: 1rem;
+    padding-left: 1rem;
+  }
+
+  .hero-facts {
+    right: 1rem;
+    left: 1rem;
+  }
+
+  .dialog-heading h2 {
+    font-size: 3.2rem;
+  }
+
+  .download-card {
+    grid-template-columns: 40px minmax(0, 1fr) 40px;
+    gap: 0.65rem;
+    padding-right: 0.8rem;
+    padding-left: 0.8rem;
+  }
+
+  .os-mark {
+    width: 38px;
+    height: 38px;
+  }
+
+  .checksum-link {
+    left: 58px;
   }
 }
 
