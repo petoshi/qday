@@ -9,7 +9,7 @@ block heights.
 | Parameter | Value |
 | --- | --- |
 | Network name | `qday-mainnet` |
-| Software release | `0.7.0` |
+| Software release | `0.7.1` |
 | Mainnet start time (UTC) | `2026-09-11T06:59:00Z` |
 | Genesis ID | `d71aebcb687c2fca4d3a5819e6c632efa7d46731395970fce081f3dc57606a40` |
 | Manifest | `qday-mainnet.json` |
