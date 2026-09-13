@@ -268,7 +268,10 @@ QDAY does not pretend to be ASIC-resistant. BLAKE2b hardware can participate.
 The node provides authenticated `getblocktemplate` and `submitblock` endpoints
 that build candidates from the QDAY mempool. A pool can reuse the raw 80-byte
 BLAKE2b search while the node handles QDAY's marker, transaction validation,
-fees and commitment. Pool details live in
+fees and commitment. The separate
+[`qday-stratum`](https://github.com/petoshi/qday-stratum) bridge connects
+SiaMining-compatible GPU or ASIC software directly to a local QDAY wallet.
+Pool details live in
 [`docs/integrations.md`](docs/integrations.md).
 
 The three bootstrap servers help wallets find the network. They do not mine.

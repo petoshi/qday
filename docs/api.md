@@ -409,7 +409,11 @@ complete 80-byte BLAKE2b work header encoded as 160 hexadecimal characters:
   "height":1001,
   "curtime":1789234567,
   "version":2,
-  "bits":"07012345"
+  "bits":"07012345",
+  "stratum":{
+    "block":"<hex-encoded complete QDAY v2 block>",
+    "merklebranch":["<64 hex characters>"]
+  }
 }
 ```
 
@@ -417,6 +421,14 @@ Transaction zero is the mandatory QDAY miner marker. The remaining entries are
 valid mempool transactions selected in dependency order. Their fees are added
 to `minerpayout`. Supplying the current `longpollid` holds the request until the
 tip or mempool changes, or until the 30-second template age expires.
+
+`stratum.block` is the complete Sia-encoded block represented by the template.
+A controller may replace its nonce and timestamp and send it to `submitblock`.
+`stratum.merklebranch` contains the left-side Merkle roots needed to use the
+last entry in `transactions` as Sia Stratum's rightmost arbitrary transaction.
+Start with `BLAKE2b-256(0x00 || transaction.data)`, then replace the root with
+`BLAKE2b-256(0x01 || branch || root)` for each branch in order. The result must
+equal `commitment`.
 
 ### `POST /api/miner/submitblock`
 

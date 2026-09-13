@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"go.sia.tech/core/blake2b"
 	"go.sia.tech/core/consensus"
 	"go.sia.tech/core/gateway"
 	"go.sia.tech/core/types"
@@ -37,6 +38,15 @@ type MiningTemplateTransaction struct {
 	TxType  string  `json:"txtype"`
 }
 
+// MiningStratumTemplate contains the data a Sia Stratum bridge needs to turn
+// the rightmost template transaction into an ordinary Sia mining job. Block is
+// the complete encoded block; a bridge replaces its nonce and timestamp before
+// submitting it.
+type MiningStratumTemplate struct {
+	Block        string   `json:"block"`
+	MerkleBranch []string `json:"merklebranch"`
+}
+
 // MiningTemplateResponse contains a complete transaction-aware QDAY mining
 // candidate. The header is included as an 80-byte hexadecimal work item for
 // pool controllers that delegate only BLAKE2b nonce search.
@@ -52,6 +62,7 @@ type MiningTemplateResponse struct {
 	Timestamp         int64                       `json:"curtime"`
 	Version           uint32                      `json:"version"`
 	Bits              string                      `json:"bits"`
+	Stratum           MiningStratumTemplate       `json:"stratum"`
 }
 
 // MiningSubmitBlockRequest follows Sia minerd's submitblock request shape.
@@ -132,6 +143,9 @@ func (s *Service) buildMiningTemplate() (cachedMiningTemplate, error) {
 			break
 		}
 	}
+	if block.V2 == nil || len(block.V2.Transactions) == 0 || len(block.MinerPayouts) != 1 {
+		return cachedMiningTemplate{}, errors.New("candidate builder returned an incomplete QDAY block")
+	}
 
 	header, err := encodeMiningObject(block.Header())
 	if err != nil {
@@ -139,6 +153,10 @@ func (s *Service) buildMiningTemplate() (cachedMiningTemplate, error) {
 	}
 	if len(header) != 160 {
 		return cachedMiningTemplate{}, fmt.Errorf("encoded mining header has %d bytes, expected 80", len(header)/2)
+	}
+	encodedBlock, err := encodeMiningObject(types.V2Block(block))
+	if err != nil {
+		return cachedMiningTemplate{}, err
 	}
 	payout, err := encodeMiningObject(types.V2SiacoinOutput(block.MinerPayouts[0]))
 	if err != nil {
@@ -151,6 +169,20 @@ func (s *Service) buildMiningTemplate() (cachedMiningTemplate, error) {
 			return cachedMiningTemplate{}, err
 		}
 		txns = append(txns, MiningTemplateTransaction{Data: data, TxID: txn.ID().String(), TxType: "2"})
+	}
+	// Sia Stratum miners place their arbitrary transaction at the right edge of
+	// the commitment tree, then fold these left-side roots into its leaf hash.
+	// QDAY's candidate always contains at least its mandatory miner marker.
+	var acc blake2b.Accumulator
+	acc.AddLeaf(cs.MerkleLeafHash(public.Policy().Address()))
+	for i := 0; i < len(block.V2.Transactions)-1; i++ {
+		acc.AddLeaf(block.V2.Transactions[i].MerkleLeafHash())
+	}
+	merkleBranch := make([]string, 0, 64)
+	for height := 0; height < len(acc.Trees); height++ {
+		if acc.NumLeaves&(uint64(1)<<height) != 0 {
+			merkleBranch = append(merkleBranch, hex.EncodeToString(acc.Trees[height][:]))
+		}
 	}
 	var longPollEntropy [16]byte
 	if _, err := rand.Read(longPollEntropy[:]); err != nil {
@@ -168,6 +200,10 @@ func (s *Service) buildMiningTemplate() (cachedMiningTemplate, error) {
 		Timestamp:         block.Timestamp.Unix(),
 		Version:           2,
 		Bits:              compactMiningDifficulty(cs.Difficulty),
+		Stratum: MiningStratumTemplate{
+			Block:        encodedBlock,
+			MerkleBranch: merkleBranch,
+		},
 	}
 	return cachedMiningTemplate{response: response, created: time.Now()}, nil
 }

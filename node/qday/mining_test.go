@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"go.sia.tech/core/blake2b"
 	"go.sia.tech/core/types"
 	"go.sia.tech/coreutils/chain"
 	mining "go.sia.tech/coreutils/qday"
@@ -55,6 +56,44 @@ func decodeTemplateBlock(t *testing.T, template MiningTemplateResponse) types.Bl
 			Commitment:   template.Commitment,
 			Transactions: txns,
 		},
+	}
+}
+
+func verifyStratumTemplate(t *testing.T, template MiningTemplateResponse) {
+	t.Helper()
+	if len(template.Transactions) == 0 {
+		t.Fatal("template has no rightmost transaction")
+	}
+	txn, err := hex.DecodeString(template.Transactions[len(template.Transactions)-1].Data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := blake2b.Sum256(append([]byte{0}, txn...))
+	for _, encoded := range template.Stratum.MerkleBranch {
+		branch, err := hex.DecodeString(encoded)
+		if err != nil || len(branch) != 32 {
+			t.Fatalf("invalid Stratum Merkle branch %q", encoded)
+		}
+		var left [32]byte
+		copy(left[:], branch)
+		root = blake2b.SumPair(left, root)
+	}
+	if root != template.Commitment {
+		t.Fatalf("Stratum Merkle root %x does not match commitment %x", root, template.Commitment)
+	}
+	raw, err := hex.DecodeString(template.Stratum.Block)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var block types.V2Block
+	decoder := types.NewBufDecoder(raw)
+	block.DecodeFrom(decoder)
+	if err := decoder.Err(); err != nil {
+		t.Fatal(err)
+	}
+	decodedBlock := block.Cast()
+	if decodedBlock.Header().Commitment != template.Commitment {
+		t.Fatal("encoded Stratum block does not match template commitment")
 	}
 }
 
@@ -144,6 +183,7 @@ func TestMiningTemplateTracksPoolAndSubmits(t *testing.T) {
 	if response.StatusCode != http.StatusOK || len(initial.Header) != 160 || len(initial.Transactions) != 1 {
 		t.Fatalf("invalid initial mining template: %+v", initial)
 	}
+	verifyStratumTemplate(t, initial)
 
 	next := make(chan MiningTemplateResponse, 1)
 	failure := make(chan error, 1)
@@ -173,6 +213,7 @@ func TestMiningTemplateTracksPoolAndSubmits(t *testing.T) {
 	if template.LongPollID == initial.LongPollID || len(template.Transactions) != 2 || template.Transactions[1].TxID != burnID.String() {
 		t.Fatalf("updated template omitted pool transaction: %+v", template)
 	}
+	verifyStratumTemplate(t, template)
 
 	block := decodeTemplateBlock(t, template)
 	mineContext, stopMining := context.WithTimeout(context.Background(), time.Second)

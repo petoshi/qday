@@ -21,7 +21,7 @@ This guide calls `h + 6` the **QDAY block**.
 | Sia wallet keys | No | Derive both QDAY keys and sign every input with both |
 | Sia contracts and siafunds | No | QDAY consensus rejects them |
 | Sia `getblocktemplate` client | Partly | Use QDAY's authenticated local endpoints and v2 templates |
-| Sia Stratum server | No | Connect the pool controller to QDAY `getblocktemplate` |
+| Sia Stratum miner | Yes, through a bridge | Run [`qday-stratum`](https://github.com/petoshi/qday-stratum) beside an unlocked QDAY node |
 | Sia explorer assumptions | No | Track the QDAY block, changing values, shields and decay |
 | Sia JSON APIs | No | The shipped API is local and controls one wallet |
 | Supply RPC | No | Read QDAY issuance and burns from `GET /api/supply` |
@@ -61,7 +61,9 @@ additional `header` field containing the complete 80-byte work header as hex.
 It already contains the mandatory QDAY miner marker, all selected mempool
 transactions, their fees, the payout and the commitment. Repeating the request
 with its `longpollid` returns when the chain or mempool changes, or after 30
-seconds. A pool must distribute fresh work when that request returns.
+seconds. The `stratum.block` and `stratum.merklebranch` fields let a controller
+produce a SiaMining-compatible job without rebuilding QDAY state. A pool must
+distribute fresh work when that request returns.
 
 After finding a valid nonce, reconstruct the complete v2 block and submit its
 Sia binary encoding as hexadecimal:
@@ -76,8 +78,10 @@ Content-Type: application/json
 
 The node validates the block and relays it. It rejects a header submitted
 without the payout, marker and transactions committed by that header. QDAY does
-not ship a Stratum server; a pool controller translates its own worker protocol
-to these local endpoints.
+not embed a Stratum listener. The separate
+[`qday-stratum`](https://github.com/petoshi/qday-stratum) solo bridge translates
+these endpoints to the SiaMining dialect. Pool controllers may use the same API
+and implement their own share difficulty, worker accounting and payouts.
 
 Pool software that constructs candidates without the API must perform the same
 steps. A Sia coinbase transaction is not valid on QDAY:
