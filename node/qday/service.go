@@ -49,6 +49,7 @@ type Service struct {
 	threads           int
 	started           time.Time
 	lastError         string
+	lastRelayError    string
 	hashes            atomic.Uint64
 	blocks            atomic.Uint64
 	restartRequested  atomic.Bool
@@ -131,13 +132,27 @@ func NewService(ctx context.Context, dir string, cm *chain.Manager, wm *wallet.M
 }
 
 func (s *Service) setError(err error) {
-	if s.Manifest.Development && errors.Is(err, syncer.ErrNoPeers) {
+	// A relay can run before bootstrap connections are ready. The transaction
+	// remains in the local pool and the background rebroadcaster retries it, so
+	// having no peer at that instant is connection state, not a wallet error.
+	if errors.Is(err, syncer.ErrNoPeers) {
 		return
 	}
 	if err != nil {
 		s.mu.Lock()
 		s.lastError = err.Error()
 		s.mu.Unlock()
+	}
+}
+
+// Relay failures describe connectivity, not a failed local wallet operation.
+// Expose them in network status and clear them on a successful retry.
+func (s *Service) setRelayError(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.lastRelayError = ""
+	if err != nil {
+		s.lastRelayError = err.Error()
 	}
 }
 
@@ -437,8 +452,8 @@ func (s *Service) run(ctx context.Context, done chan struct{}, threads int, pub 
 		}
 		s.blocks.Add(1)
 		if s.Syncer != nil {
-			s.setError(s.Syncer.BroadcastV2Header(b.Header()))
-			s.setError(s.Syncer.BroadcastV2BlockOutline(gateway.OutlineBlock(b, nil, nil)))
+			s.setRelayError(s.Syncer.BroadcastV2Header(b.Header()))
+			s.setRelayError(s.Syncer.BroadcastV2BlockOutline(gateway.OutlineBlock(b, nil, nil)))
 		}
 		if s.Manifest.Development {
 			select {
@@ -456,8 +471,12 @@ var errWalletSyncing = errors.New("wallet is synchronizing; retry shortly")
 // outputs returns a consistent, paginated snapshot and excludes spends already
 // in the mempool. No fixed first-page balance or selection limit hides coins.
 func (s *Service) outputs(cs consensus.State, pub types.QdayAddress) ([]wallet.UnspentSiacoinElement, error) {
+	return s.outputsAtPool(cs, pub, s.CM.V2PoolTransactions())
+}
+
+func (s *Service) outputsAtPool(cs consensus.State, pub types.QdayAddress, pool []types.V2Transaction) ([]wallet.UnspentSiacoinElement, error) {
 	spent := make(map[types.SiacoinOutputID]bool)
-	for _, txn := range s.CM.V2PoolTransactions() {
+	for _, txn := range pool {
 		for _, in := range txn.SiacoinInputs {
 			spent[in.Parent.ID] = true
 		}
@@ -519,8 +538,15 @@ const (
 // Browser reviews name their source wallet so an import in another tab cannot
 // silently change which wallet pays for the reviewed transaction.
 func (s *Service) submitFor(ctx context.Context, from string, to types.QdayAddress, amount types.Currency, mode submitMode, witness *[32]byte) (types.TransactionID, error) {
+	return s.submitReviewed(ctx, from, "", "", to, amount, mode, witness)
+}
+
+func (s *Service) submitReviewed(ctx context.Context, from, unit, customFee string, to types.QdayAddress, amount types.Currency, mode submitMode, witness *[32]byte) (types.TransactionID, error) {
 	s.op.Lock()
 	defer s.op.Unlock()
+	if err := ctx.Err(); err != nil {
+		return types.TransactionID{}, err
+	}
 	s.mu.Lock()
 	keys := s.keys
 	s.mu.Unlock()
@@ -531,6 +557,29 @@ func (s *Service) submitFor(ctx context.Context, from string, to types.QdayAddre
 		return types.TransactionID{}, errors.New("the active wallet changed; review the transaction again")
 	}
 	cs := s.CM.TipState()
+	checkUnit := func(state consensus.State) error {
+		if unit != "" && unit != state.QdayUnits(state.Index.Height).ExactString() {
+			return errors.New("QDAY denomination changed; review the amount and fee again")
+		}
+		return nil
+	}
+	if err := checkUnit(cs); err != nil {
+		return types.TransactionID{}, err
+	}
+	fee := types.HastingsPerSiacoin.Div64(1000)
+	if mode == submitProof {
+		fee = cs.Network.Qday.ProofFee
+	}
+	if customFee != "" {
+		var err error
+		fee, err = ParseAmount(customFee, cs.QdayUnits(cs.Index.Height))
+		if err != nil {
+			return types.TransactionID{}, fmt.Errorf("invalid transaction fee: %w", err)
+		}
+	}
+	if mode == submitProof && fee.Cmp(cs.Network.Qday.ProofFee) < 0 {
+		return types.TransactionID{}, errors.New("fee is below the minimum proof publication fee")
+	}
 	if mode == submitProof {
 		if witness == nil {
 			return types.TransactionID{}, errors.New("missing QDAY proof")
@@ -549,11 +598,19 @@ func (s *Service) submitFor(ctx context.Context, from string, to types.QdayAddre
 	if err != nil {
 		return types.TransactionID{}, err
 	}
-	sort.Slice(outs, func(i, j int) bool { return outs[i].MaturityHeight < outs[j].MaturityHeight })
-	fee := types.HastingsPerSiacoin.Div64(1000)
-	if mode == submitProof {
-		fee = cs.Network.Qday.ProofFee
-	}
+	// Ordinary payments prefer larger outputs: tiny old rewards must not hide
+	// a sufficient newer output behind the input limit. DEFEND renews the
+	// oldest shields first.
+	sort.Slice(outs, func(i, j int) bool {
+		if mode != submitDefend {
+			vi := cs.QdayValue(outs[i].SiacoinElement, cs.Index.Height+2)
+			vj := cs.QdayValue(outs[j].SiacoinElement, cs.Index.Height+2)
+			if cmp := vi.Cmp(vj); cmp != 0 {
+				return cmp > 0
+			}
+		}
+		return outs[i].MaturityHeight < outs[j].MaturityHeight
+	})
 	required, overflow := amount.AddWithOverflow(fee)
 	if overflow {
 		return types.TransactionID{}, errors.New("amount plus fee overflows")
@@ -576,7 +633,7 @@ func (s *Service) submitFor(ctx context.Context, from string, to types.QdayAddre
 		}
 		total = total.Add(v)
 		txn.SiacoinInputs = append(txn.SiacoinInputs, types.V2SiacoinInput{Parent: out.SiacoinElement, SatisfiedPolicy: types.SatisfiedPolicy{Policy: keys.Public.Policy()}})
-		if len(txn.SiacoinInputs) == 64 || (mode != submitDefend && total.Cmp(required) >= 0) {
+		if len(txn.SiacoinInputs) == 128 || (mode != submitDefend && total.Cmp(required) >= 0) {
 			break
 		}
 	}
@@ -601,7 +658,7 @@ func (s *Service) submitFor(ctx context.Context, from string, to types.QdayAddre
 			return types.TransactionID{}, errors.New("burn amount must be positive")
 		}
 		if total.Cmp(required) < 0 {
-			return types.TransactionID{}, errors.New("insufficient confirmed spendable balance (including fee); at most 64 inputs per burn")
+			return types.TransactionID{}, errors.New("insufficient confirmed spendable balance (including fee); at most 128 inputs per burn")
 		}
 		txn.SiacoinOutputs = []types.SiacoinOutput{{Value: amount, Address: types.VoidAddress}}
 		if change := total.Sub(amount).Sub(fee); !change.IsZero() {
@@ -615,7 +672,7 @@ func (s *Service) submitFor(ctx context.Context, from string, to types.QdayAddre
 			return types.TransactionID{}, errors.New("amount must be positive")
 		}
 		if total.Cmp(required) < 0 {
-			return types.TransactionID{}, errors.New("insufficient confirmed spendable balance (including fee); at most 64 inputs per send")
+			return types.TransactionID{}, errors.New("insufficient confirmed spendable balance (including fee); at most 128 inputs per send")
 		}
 		txn.SiacoinOutputs = []types.SiacoinOutput{{Value: amount, Address: types.Address(to)}}
 		if change := total.Sub(amount).Sub(fee); !change.IsZero() {
@@ -632,7 +689,11 @@ func (s *Service) submitFor(ctx context.Context, from string, to types.QdayAddre
 	default:
 	}
 	// Accumulator proofs may advance during signing; update them before relay.
-	basis := s.CM.Tip()
+	current := s.CM.TipState()
+	if err := checkUnit(current); err != nil {
+		return types.TransactionID{}, err
+	}
+	basis := current.Index
 	txns, err := s.CM.UpdateV2TransactionSet([]types.V2Transaction{txn}, cs.Index, basis)
 	if err != nil {
 		return types.TransactionID{}, err
@@ -643,9 +704,8 @@ func (s *Service) submitFor(ctx context.Context, from string, to types.QdayAddre
 	if err := s.rememberBroadcast(basis, txns); err != nil {
 		s.setError(fmt.Errorf("failed to save pending transaction for rebroadcast: %w", err))
 	}
-	if s.Syncer != nil {
-		s.setError(s.Syncer.BroadcastV2TransactionSet(basis, txns))
-	}
+	// rememberBroadcast wakes the persistent relay worker. Network I/O must
+	// not hold the signing lock or turn an accepted payment into a UI failure.
 	return txn.ID(), nil
 }
 
@@ -758,7 +818,7 @@ func (s *Service) Status() (map[string]any, error) {
 		genesisWait = 0
 	}
 	s.mu.Lock()
-	pub, unlocked, mode, threads, started, last := s.public, s.keys != nil, s.mode, s.threads, s.started, s.lastError
+	pub, unlocked, mode, threads, started, last, relayError := s.public, s.keys != nil, s.mode, s.threads, s.started, s.lastError, s.lastRelayError
 	s.mu.Unlock()
 	peers := 0
 	if s.Syncer != nil {
@@ -771,8 +831,10 @@ func (s *Service) Status() (map[string]any, error) {
 	unit := cs.QdayUnits(cs.Index.Height)
 	r := map[string]any{"network": cs.Network.Name, "development": s.Manifest.Development, "height": cs.Index.Height, "genesis": s.Manifest.Genesis.ID(), "genesisTimestamp": s.Manifest.Genesis.Timestamp.Format(time.RFC3339), "genesisReady": genesisWait == 0, "genesisWaitSeconds": int64((genesisWait + time.Second - 1) / time.Second), "scanHeight": scan.Height, "synced": scan == cs.Index, "qdayHeight": cs.QdayHeight, "qday": cs.QdayActive(cs.Index.Height), "canary": fmt.Sprintf("%x", cs.Network.Qday.Canary), "unlocked": unlocked, "hasWallet": pub != (types.QdayAddress{}), "mode": mode, "threads": threads, "maxThreads": min(runtime.NumCPU(), 256), "peers": peers, "blocksFound": s.blocks.Load(), "lastError": last, "hashrate": float64(0), "balanceReady": false, "balance": nil, "immature": nil, "pending": nil, "fee": FormatAmount(types.HastingsPerSiacoin.Div64(1000), unit)}
 	r["unit"] = unit.ExactString()
+	r["relayError"] = relayError
 	r["canRestart"] = s.RestartEnabled
-	r["mempoolTransactions"] = len(s.CM.V2PoolTransactions())
+	pool := s.CM.V2PoolTransactions()
+	r["mempoolTransactions"] = len(pool)
 	if s.Syncer != nil {
 		var bootstrap, bootstrapOutbound, regular, inbound int
 		for _, p := range s.Syncer.Peers() {
@@ -818,7 +880,7 @@ func (s *Service) Status() (map[string]any, error) {
 		return r, nil
 	}
 	r["address"] = pub.String()
-	outs, err := s.outputs(cs, pub)
+	outs, err := s.outputsAtPool(cs, pub, pool)
 	if errors.Is(err, errWalletSyncing) {
 		// An index catching up or a block arriving during pagination makes the
 		// amounts unknown, not zero. Clients may retain a labelled prior snapshot.
@@ -844,9 +906,16 @@ func (s *Service) Status() (map[string]any, error) {
 		return nil, err
 	}
 	var pending types.Currency
-	for _, tx := range s.CM.V2PoolTransactions() {
-		for _, o := range tx.SiacoinOutputs {
-			if o.Address == types.Address(pub) {
+	spentPending := make(map[types.SiacoinOutputID]bool)
+	for _, tx := range pool {
+		for _, input := range tx.SiacoinInputs {
+			spentPending[input.Parent.ID] = true
+		}
+	}
+	for _, tx := range pool {
+		id := tx.ID()
+		for i, o := range tx.SiacoinOutputs {
+			if o.Address == types.Address(pub) && !spentPending[tx.SiacoinOutputID(id, i)] {
 				pending = pending.Add(o.Value)
 			}
 		}

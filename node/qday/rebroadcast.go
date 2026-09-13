@@ -26,6 +26,7 @@ type pendingBroadcast struct {
 	Basis         types.ChainIndex      `json:"basis"`
 	BroadcastedAt time.Time             `json:"broadcastedAt"`
 	Transactions  []types.V2Transaction `json:"transactions"`
+	confirmedAt   types.ChainIndex
 }
 
 type pendingBroadcastFile struct {
@@ -129,6 +130,8 @@ func (s *Service) savePendingBroadcastsLocked() error {
 	b, err := json.Marshal(stored)
 	if err != nil {
 		return err
+	} else if len(b) > maxRebroadcastFile || len(ids) > maxRebroadcastSets {
+		return errors.New("pending transaction storage limit reached")
 	}
 	tmp, err := os.CreateTemp(filepath.Dir(s.rebroadcastPath), ".qday-pending-*")
 	if err != nil {
@@ -182,6 +185,58 @@ func (s *Service) rememberBroadcast(basis types.ChainIndex, txns []types.V2Trans
 	return err
 }
 
+// updatePendingProofs catches up local, persisted transactions in bounded
+// steps. The chain manager deliberately limits work for untrusted P2P sets;
+// a wallet that was offline for hours must not treat that limit as expiration.
+func (s *Service) updatePendingProofs(txns []types.V2Transaction, from, to types.ChainIndex) ([]types.V2Transaction, error) {
+	const step = uint64(72)
+	for from != to {
+		if err := s.ctx.Err(); err != nil {
+			return nil, err
+		}
+		best, onBest := s.CM.BestIndex(from.Height)
+		var next types.ChainIndex
+		if onBest && best == from && from.Height < to.Height {
+			var ok bool
+			next, ok = s.CM.BestIndex(min(from.Height+step, to.Height))
+			if !ok {
+				return nil, errors.New("pending transaction is waiting for chain synchronization")
+			}
+		} else if onBest && best == from && from.Height == to.Height {
+			// The selected destination may have become a side branch.
+			next = to
+		} else {
+			// Return from an old branch (or a wallet ahead of the local node)
+			// without holding the chain manager's lock for a long reorg path.
+			next = from
+			for range step {
+				if next.Height == 0 {
+					return nil, errors.New("pending transaction basis is outside this chain")
+				}
+				block, ok := s.CM.Block(next.ID)
+				if !ok {
+					return nil, errors.New("pending transaction basis is not available yet")
+				}
+				next = types.ChainIndex{Height: next.Height - 1, ID: block.ParentID}
+				if best, ok := s.CM.BestIndex(next.Height); ok && best == next && next.Height <= to.Height {
+					break
+				}
+			}
+		}
+		var err error
+		txns, err = s.CM.UpdateV2TransactionSet(txns, from, next)
+		if err != nil || len(txns) == 0 {
+			return txns, err
+		}
+		from = next
+		// Retry on the next pass if a reorganization changed the destination.
+		if best, ok := s.CM.BestIndex(to.Height); !ok || best != to {
+			return nil, errors.New("chain changed while updating pending transaction proofs")
+		}
+	}
+	return txns, nil
+}
+
 func (s *Service) rebroadcastPending() {
 	s.rebroadcastMu.Lock()
 	sets := make(map[types.TransactionID]pendingBroadcast, len(s.rebroadcasts))
@@ -201,22 +256,27 @@ func (s *Service) rebroadcastPending() {
 			changed = true
 			continue
 		}
+		if set.confirmedAt != (types.ChainIndex{}) {
+			if best, ok := s.CM.BestIndex(set.confirmedAt.Height); ok && best == set.confirmedAt {
+				continue
+			}
+		}
 		txns := make([]types.V2Transaction, len(set.Transactions))
 		for i := range set.Transactions {
 			txns[i] = set.Transactions[i].DeepCopy()
 		}
-		updated, err := s.CM.UpdateV2TransactionSet(txns, set.Basis, tip)
+		updated, err := s.updatePendingProofs(txns, set.Basis, tip)
 		if err != nil {
-			s.rebroadcastMu.Lock()
-			delete(s.rebroadcasts, id)
-			s.rebroadcastMu.Unlock()
-			changed = true
+			// Missing history, a reorg, or a temporary local failure is not
+			// proof of confirmation. Preserve the signed transaction to retry.
 			continue
 		} else if len(updated) == 0 {
+			// Keep the original signed transaction until the retry deadline.
+			// Confirmation can be undone by a reorg, including after restart.
+			set.confirmedAt = tip
 			s.rebroadcastMu.Lock()
-			delete(s.rebroadcasts, id)
+			s.rebroadcasts[id] = set
 			s.rebroadcastMu.Unlock()
-			changed = true
 			continue
 		}
 		if _, err := s.CM.AddV2PoolTransactions(tip, updated); err != nil {
@@ -224,12 +284,13 @@ func (s *Service) rebroadcastPending() {
 		}
 		set.Basis = tip
 		set.Transactions = updated
+		set.confirmedAt = types.ChainIndex{}
 		s.rebroadcastMu.Lock()
 		s.rebroadcasts[id] = set
 		s.rebroadcastMu.Unlock()
 		changed = true
 		if s.Syncer != nil {
-			s.setError(s.Syncer.BroadcastV2TransactionSet(tip, updated))
+			s.setRelayError(s.Syncer.BroadcastV2TransactionSet(tip, updated))
 		}
 	}
 	if changed {

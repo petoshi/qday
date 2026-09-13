@@ -34,7 +34,7 @@ import (
 	"go.uber.org/zap"
 )
 
-var version = "0.7.1"
+var version = "0.7.2"
 
 func loadManifest(path string) (m chain.QdayManifest, err error) {
 	f, err := os.Open(path)

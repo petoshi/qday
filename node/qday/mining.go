@@ -243,12 +243,8 @@ func (s *Service) SubmitMiningBlock(encoded string) (types.BlockID, error) {
 		return types.BlockID{}, err
 	}
 	if s.Syncer != nil {
-		if err := s.Syncer.BroadcastV2Header(block.Header()); err != nil {
-			s.setError(err)
-		}
-		if err := s.Syncer.BroadcastV2BlockOutline(gateway.OutlineBlock(block, s.CM.PoolTransactions(), s.CM.V2PoolTransactions())); err != nil {
-			s.setError(err)
-		}
+		s.setRelayError(s.Syncer.BroadcastV2Header(block.Header()))
+		s.setRelayError(s.Syncer.BroadcastV2BlockOutline(gateway.OutlineBlock(block, s.CM.PoolTransactions(), s.CM.V2PoolTransactions())))
 	}
 	return block.ID(), nil
 }

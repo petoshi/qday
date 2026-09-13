@@ -6,6 +6,10 @@ let transferDraft = null, messageTimer, polling = null, chosenThreads = false;
 let setupMode = "create", setupDismissed = false, proofDraft = null, burnDraft = null;
 let backupMustSave = false, importAddress = "", lockedRecoveryAddress = "";
 let balanceSnapshot = null;
+let lastNodeError = "";
+let lastConnectionError = "";
+let lockRequested = false;
+let feeScope = "";
 const samples = [];
 // One-use launch codes disappear before the first request; the long-lived
 // node credential is never part of an automatic browser URL.
@@ -56,19 +60,97 @@ document.querySelectorAll("[data-view]").forEach(el => {
   el.addEventListener("click", () => view(el.dataset.view, el.dataset.focus));
 });
 async function api(path, body) {
-  const res = await fetch("/api/" + path, {
-    method: body === undefined ? "GET" : "POST",
-    headers: {Authorization: "Bearer " + token, "Content-Type": "application/json"},
-    body: body === undefined ? undefined : JSON.stringify(body),
-    cache: "no-store"
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), body === undefined ? 15000 : 120000);
+  try {
+    const res = await fetch("/api/" + path, {
+      method: body === undefined ? "GET" : "POST",
+      headers: {Authorization: "Bearer " + token, "Content-Type": "application/json"},
+      body: body === undefined ? undefined : JSON.stringify(body),
+      cache: "no-store", signal: controller.signal
+    });
+    if (res.status === 401) throw new Error("Open QDAY Wallet again to reconnect this browser tab.");
+    let data;
+    try { data = await res.json(); } catch { throw new Error("Local node returned HTTP " + res.status); }
+    if (!res.ok) throw new Error(data.error || "Request failed");
+    return data;
+  } catch (error) {
+    if (controller.signal.aborted) throw new Error(body === undefined
+      ? "Local node is not responding. Reconnecting…"
+      : "The node did not respond in time. Check the wallet status before trying this action again.");
+    throw error;
+  } finally { clearTimeout(timer); }
+}
+function atomicAmount(value, unit, label = "Amount") {
+  const decimals = String(unit).length - 1;
+  if (!/^(0|[1-9]\d*)(\.\d+)?$/.test(value) || value.length > 80) throw new Error(label + " must be a non-negative decimal amount in QDAY.");
+  const [whole, fraction = ""] = value.split(".");
+  if (fraction.length > decimals) throw new Error(label + " has too many decimal places.");
+  const amount = BigInt(whole) * BigInt(unit) + BigInt(fraction.padEnd(decimals, "0") || "0");
+  if (amount > (1n << 128n) - 1n) throw new Error(label + " is too large.");
+  return amount;
+}
+function decimalAmount(amount, unit) {
+  const scale = BigInt(unit), decimals = String(unit).length - 1;
+  const fraction = (amount % scale).toString().padStart(decimals, "0").replace(/0+$/, "");
+  return (amount / scale).toString() + (fraction ? "." + fraction : "");
+}
+function setFeeMode(field, mode) {
+  field.dataset.mode = mode;
+  field.querySelectorAll("[data-fee-mode]").forEach(button => button.setAttribute("aria-pressed", String(button.dataset.feeMode === mode)));
+  field.querySelector("[data-fee-custom]").hidden = mode !== "custom";
+  const input = field.querySelector("[data-fee-input]");
+  input.required = mode === "custom";
+  input.disabled = mode !== "custom" || busy || !connected;
+}
+document.querySelectorAll("[data-fee]").forEach(field => {
+  field.querySelectorAll("[data-fee-mode]").forEach(button => {
+    button.onclick = () => {
+      setFeeMode(field, button.dataset.feeMode);
+      if (field.dataset.mode === "custom") field.querySelector("[data-fee-input]").focus();
+    };
   });
-  if (res.status === 401) throw new Error("Open QDAY Wallet again to reconnect this browser tab.");
-  let data;
-  try { data = await res.json(); } catch { throw new Error("Local node returned HTTP " + res.status); }
-  if (!res.ok) throw new Error(data.error || "Request failed");
-  return data;
+});
+function renderFees(s) {
+  const scope = (s.address || "") + ":" + s.unit;
+  document.querySelectorAll("[data-fee]").forEach(field => {
+    const standard = field.dataset.fee === "proof" ? s.proofFee : s.fee;
+    if (scope !== feeScope) {
+      field.querySelector("[data-fee-input]").value = "";
+      setFeeMode(field, "auto");
+    }
+    field.querySelector("[data-fee-auto]").textContent = coins(standard) + " QDAY";
+    field.querySelector("[data-fee-input]").placeholder = standard;
+    field.querySelector("[data-fee-note]").textContent = field.dataset.fee === "proof"
+      ? "Publication requires at least " + coins(standard) + " QDAY."
+      : "Auto uses the standard wallet fee. Custom sets the total fee paid to the miner.";
+  });
+  feeScope = scope;
+}
+function selectedFee(name, standard = latest.fee, unit = latest.unit) {
+  const field = document.querySelector('[data-fee="' + name + '"]');
+  const fee = field.dataset.mode === "custom" ? field.querySelector("[data-fee-input]").value.trim() : standard;
+  const atomic = atomicAmount(fee, unit, "Fee");
+  if (name === "proof" && atomic < atomicAmount(standard, unit)) throw new Error("Publication fee must be at least " + coins(standard) + " QDAY.");
+  return fee;
+}
+function resetFee(name) {
+  const field = document.querySelector('[data-fee="' + name + '"]');
+  field.querySelector("[data-fee-input]").value = "";
+  setFeeMode(field, "auto");
+}
+function reviewPayment(name, amount) {
+  const fee = selectedFee(name);
+  const total = atomicAmount(amount, latest.unit) + atomicAmount(fee, latest.unit, "Fee");
+  if (total > atomicAmount(latest.balance, latest.unit)) throw new Error("Amount and fee exceed your available balance.");
+  return {fee, total:decimalAmount(total, latest.unit)};
 }
 function controls() {
+  $("unlockConnection").hidden = connected;
+  document.querySelectorAll("[data-fee]").forEach(field => {
+    field.querySelectorAll("[data-fee-mode]").forEach(button => {button.disabled = busy || !connected;});
+    field.querySelector("[data-fee-input]").disabled = field.dataset.mode !== "custom" || busy || !connected;
+  });
   const ready = connected && latest?.unlocked && latest?.synced && latest?.balanceReady && !backupPending && !busy && !stopped;
   $("start").disabled = !connected || !latest?.unlocked || !latest?.networkSynced || latest?.genesisReady === false || backupPending || busy || stopped;
   $("send").disabled = !ready;
@@ -180,7 +262,12 @@ function showLockedWallet() {
 }
 function render(s) {
   latest = s; connected = true;
-  const locked = s.hasWallet && !s.unlocked;
+  if (lastConnectionError && $("messageText").textContent === lastConnectionError) {
+    $("messageText").textContent = "";
+    $("message").hidden = true;
+  }
+  lastConnectionError = "";
+  const locked = s.hasWallet && (!s.unlocked || lockRequested);
   setWalletScreenLocked(locked);
   $("connect").hidden = true; $("app").hidden = false;
   $("connectionDot").classList.remove("offline");
@@ -194,10 +281,13 @@ function render(s) {
   const mappingLabels = {discovering:"Finding router",mapped:"UPnP active","upstream-nat":"UPnP active · upstream NAT",unavailable:"Unavailable",disabled:"Disabled","not-needed":"Not applied"};
   $("networkMapping").textContent = mappingLabels[p2p?.mapping?.state] ?? "Checking…";
   $("networkMappingNote").textContent = p2p?.mapping?.detail ?? "Your wallet discovers peers through seeds, then releases them once other connections are stable.";
-  for (const id of ["mode","height","peers","fee"]) {
-    $(id).textContent = id === "fee" ? coins(s[id]) : s[id];
+  $("networkRelayNotice").hidden = !s.relayError;
+  $("networkRelayNotice").textContent = s.relayError ? "Broadcast is waiting for a working connection. Pending transactions retry automatically." : "";
+  $("networkRelayNotice").title = s.relayError || "";
+  for (const id of ["mode","height","peers"]) {
+    $(id).textContent = s[id];
   }
-  $("burnFee").textContent = coins(s.fee);
+  renderFees(s);
   renderBalance(s);
   $("hashrate").textContent = Math.round(s.hashrate).toLocaleString();
   $("blocks").textContent = s.blocksFound;
@@ -235,7 +325,11 @@ function render(s) {
   $("survivalNote").textContent = s.qday ? "The challenge has been solved. Your reserve key protects spending; DEFEND renews your shields. Only a confirmed renewal prevents decay." : "QDAY starts when the network verifies a solution to its fixed Edwards25519 challenge. No news feed, admin switch or calendar date.";
   $("activityNote").textContent = s.qday ? "DEFEND renews shields and mines blocks. Stay online and unlocked. Renewals pay a fee. STOP lets shields expire; burned coins never return." : "Mining uses your CPU and electricity. Rewards require finding a block and waiting for maturity.";
   controls(); drawHashrate(s.hashrate);
-  if (s.lastError && !busy) message(s.lastError, true);
+  if (!s.lastError) lastNodeError = "";
+  else if (s.lastError !== lastNodeError && !busy && !document.querySelector("dialog[open]")) {
+    lastNodeError = s.lastError;
+    message(s.lastError, true);
+  }
 }
 async function refresh() {
   if (!token || stopped || busy) return;
@@ -247,7 +341,10 @@ async function refresh() {
       $("connectionDot").classList.add("offline");
       $("connectionLabel").textContent = "Disconnected";
       $("sync").textContent = "OFFLINE";
-      message(e.message, true);
+      if (e.message !== lastConnectionError && !busy && !document.querySelector("dialog[open]")) {
+        lastConnectionError = e.message;
+        message(e.message, true);
+      }
     } finally { polling = null; }
   })();
   return polling;
@@ -409,20 +506,34 @@ $("lock").onclick = openWalletAction;
 $("miningWalletAction").onclick = openWalletAction;
 $("cancelLock").onclick = () => $("lockPrompt").close();
 $("lockPrompt").addEventListener("cancel", e => {if (busy) e.preventDefault();});
-$("confirmLock").onclick = () => action(async () => {
-  await api("lock", {});
-  render({...latest, unlocked:false, mode:"STOP", hashrate:0});
-  message("Wallet locked. Enter your password to unlock.");
-});
+$("confirmLock").onclick = () => {
+  if ($("confirmLock").disabled) return;
+  lockRequested = true;
+  showLockedWallet();
+  $("unlockTitle").textContent = "Locking your wallet…";
+  $("unlockDescription").textContent = "Stopping CPU activity and clearing unlocked keys.";
+  action(async () => {
+    try {
+      await api("lock", {});
+      render({...latest, unlocked:false, mode:"STOP", hashrate:0});
+      setUnlockMode();
+      message("Wallet locked. Enter your password to unlock.");
+    } finally { lockRequested = false; }
+  });
+};
 $("sendForm").onsubmit = e => {
   e.preventDefault();
   if ($("send").disabled) return;
   const address = $("destination").value.trim(), amount = $("amount").value.trim();
   if (!(/^(?:qday1[ac-hj-np-z02-9]{59}|QDAY1[AC-HJ-NP-Z02-9]{59})$/.test(address) || /^qday1[0-9a-fA-F]{136}$/.test(address))) {message("Enter a valid QDAY recipient address.", true); return;}
   if (!/^(0|[1-9]\d*)(\.\d+)?$/.test(amount) || !/[1-9]/.test(amount)) {message("Enter a positive decimal amount.", true);return;}
-  transferDraft = {address, amount, unit:latest.unit, fromAddress:latest.address};
+  let review;
+  try { review = reviewPayment("send", amount); }
+  catch (error) { message(error.message, true); return; }
+  transferDraft = {address, amount, fee:review.fee, unit:latest.unit, fromAddress:latest.address};
   $("reviewAmount").textContent = coins(amount); $("reviewAddress").textContent = address;
-  $("reviewFee").textContent = coins(latest.fee) + " QDAY";
+  $("reviewFee").textContent = coins(review.fee) + " QDAY";
+  $("reviewTotal").textContent = coins(review.total) + " QDAY";
   message(); $("sendReview").showModal();
 };
 $("cancelTransfer").onclick = () => $("sendReview").close();
@@ -434,6 +545,7 @@ $("confirmTransfer").onclick = () => action(async () => {
   }
   const value = await api("send", transferDraft);
   $("sendReview").close(); $("amount").value = "";
+  resetFee("send");
   message("Submitted; waiting for a block. Transaction: " + value.transaction);
 });
 $("burnForm").onsubmit = e => {
@@ -441,9 +553,13 @@ $("burnForm").onsubmit = e => {
   if ($("reviewBurn").disabled) return;
   const amount = $("burnAmount").value.trim();
   if (!/^(0|[1-9]\d*)(\.\d+)?$/.test(amount) || !/[1-9]/.test(amount)) {message("Enter a positive decimal amount to burn.", true);return;}
-  burnDraft = {amount, unit:latest.unit, fromAddress:latest.address};
+  let review;
+  try { review = reviewPayment("burn", amount); }
+  catch (error) { message(error.message, true); return; }
+  burnDraft = {amount, fee:review.fee, unit:latest.unit, fromAddress:latest.address};
   $("burnReviewAmount").textContent = coins(amount);
-  $("burnReviewFee").textContent = coins(latest.fee) + " QDAY";
+  $("burnReviewFee").textContent = coins(review.fee) + " QDAY";
+  $("burnReviewTotal").textContent = coins(review.total) + " QDAY";
   $("burnConfirmation").value = "";
   controls(); message(); $("burnReview").showModal(); $("burnConfirmation").focus();
 };
@@ -460,6 +576,7 @@ $("confirmBurn").onclick = () => action(async () => {
   }
   const value = await api("burn", burnDraft);
   $("burnReview").close(); $("burnAmount").value = "";
+  resetFee("burn");
   message("Burn submitted; supply changes after confirmation. Transaction: " + value.transaction);
 });
 $("copyAddress").onclick = async () => {
@@ -479,9 +596,10 @@ $("proofForm").onsubmit = e => {
     const result = await api("proof/verify", {witness});
     if (result.qdayHeight) throw new Error("A proof is already confirmed on this network.");
     if (result.proofPending) throw new Error("A proof is already awaiting confirmation in the mempool.");
-    proofDraft = {witness, unit:result.unit, fromAddress:latest?.address || ""};
+    const fee = selectedFee("proof", result.fee, result.unit);
+    proofDraft = {witness, fee, unit:result.unit, fromAddress:latest?.address || ""};
     $("proofReviewNetwork").textContent = result.network;
-    $("proofReviewFee").textContent = coins(result.fee) + " QDAY";
+    $("proofReviewFee").textContent = coins(fee) + " QDAY";
     $("proofReviewDelay").textContent = result.activationDelay + (result.activationDelay === 1 ? " block" : " blocks");
     $("proofReviewWitness").textContent = witness;
     message(); $("proofReview").showModal();
@@ -494,6 +612,7 @@ $("confirmProof").onclick = () => action(async () => {
   if (!proofDraft) return;
   const value = await api("proof", proofDraft);
   $("proofReview").close(); $("proofWitness").value = "";
+  resetFee("proof");
   message("Proof submitted; waiting for a block. Transaction: " + value.transaction);
 });
 $("peerForm").onsubmit = e => {

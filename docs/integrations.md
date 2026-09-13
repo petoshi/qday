@@ -143,6 +143,20 @@ and supplies QDAY's replay protection; the Sia signature hash is different.
 QDAY accepts coin transfers only. It rejects file contracts, siafunds,
 attestations and foundation updates.
 
+### Dependent transactions
+
+When a transaction spends an unconfirmed output, include its unconfirmed
+ancestors before it in the submitted set. QDAY's `MaturityHeight` also records
+an ordinary output's birth height. Set it to `basis.Height + 1` for an
+unconfirmed parent; Sia's `EphemeralSiacoinOutput` helper alone leaves it at
+zero. The QDAY chain manager updates this height while the parent is pending
+and preserves its actual birth height after confirmation.
+
+Use `V2TransactionSet` to assemble an ordered set and `UpdateV2TransactionSet`
+to update its accumulator proofs. These updates preserve transaction IDs,
+destinations, amounts and signatures. Source: [transaction pool and proof
+updates](../coreutils/chain/manager.go).
+
 ### Amounts
 
 Store balances as atomic integers. Before the QDAY block, one displayed QDAY is
@@ -165,7 +179,9 @@ and requires both signatures and DEFEND work.
 
 The bundled wallet burns coins by creating a normal header-kind-`1` transfer
 with an output to `types.VoidAddress`, the 32-byte all-zero address. It returns
-change to the sender and pays the ordinary wallet fee. There is no burn key,
+change to the sender and pays the standard or explicitly selected wallet fee.
+The wallet API accepts an optional decimal `fee` for sends, burns and proof
+publication; see [wallet transaction fees](api.md#post-apisend). There is no burn key,
 admin transaction or separate consensus opcode. Treat any confirmed output to
 the void address as permanently unspendable. Do not credit a mempool burn as
 final; a reorganization can remove its block.

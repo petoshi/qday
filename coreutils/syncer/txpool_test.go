@@ -15,7 +15,7 @@ import (
 	"go.sia.tech/coreutils/testutil"
 )
 
-func newQdayTestSyncer(t *testing.T) (*syncer.Syncer, *chain.Manager, chain.QdayManifest) {
+func newQdayTestSyncer(t *testing.T, options ...syncer.Option) (*syncer.Syncer, *chain.Manager, chain.QdayManifest) {
 	t.Helper()
 	manifest := chain.QdayDevnet()
 	store, tip, err := chain.NewDBStore(chain.NewMemDB(), &manifest.Network, manifest.Genesis, nil)
@@ -31,7 +31,7 @@ func newQdayTestSyncer(t *testing.T) (*syncer.Syncer, *chain.Manager, chain.Qday
 		GenesisID:  manifest.Genesis.ID(),
 		UniqueID:   gateway.GenerateUniqueID(),
 		NetAddress: listener.Addr().String(),
-	}, syncer.WithSyncInterval(25*time.Millisecond))
+	}, append([]syncer.Option{syncer.WithSyncInterval(25 * time.Millisecond)}, options...)...)
 	go sy.Run()
 	t.Cleanup(func() { sy.Close() })
 	return sy, cm, manifest

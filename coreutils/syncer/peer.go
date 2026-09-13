@@ -447,6 +447,7 @@ func (s *Syncer) handleRPC(id types.Specifier, stream *gateway.Stream, origin *P
 			if err != nil {
 				s.log.Debug("received invalid transaction set", zap.Stringer("origin", origin), zap.Error(err))
 			} else {
+				s.log.Info("accepted transaction set", zap.Int("transactions", len(r.Transactions)), zap.Stringer("lastTransaction", r.Transactions[len(r.Transactions)-1].ID()), zap.Uint64("basisHeight", r.Index.Height))
 				go s.relayV2TransactionSet(r.Index, r.Transactions, origin) // non-blocking
 			}
 		}

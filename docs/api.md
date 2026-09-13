@@ -114,17 +114,18 @@ Returns node, chain, wallet, mining and network state.
 | `balanceReady` | boolean | monetary fields are a current indexed snapshot |
 | `balance` | string or null | confirmed QDAY available to spend |
 | `immature` | string or null | confirmed mining rewards still inside the 60-block wait |
-| `pending` | string or null | outputs to this wallet in locally known unconfirmed transactions |
+| `pending` | string or null | outputs to this wallet in the local mempool, excluding outputs already spent by another pending transaction |
 | `mode` | string | `STOP`, `MINE` or `DEFEND` |
 | `threads` | integer | configured native CPU threads |
 | `maxThreads` | integer | maximum accepted thread count |
 | `hashrate` | number | session average hashes per second |
 | `blocksFound` | integer | blocks found in this process session |
 | `lastError` | string | last background error, or empty |
+| `relayError` | string | latest broadcast connection error; cleared after a successful broadcast |
 | `peers` | integer | current P2P connections |
 | `mempoolTransactions` | integer | transactions in the local unconfirmed pool |
-| `fee` | string | bundled-wallet transfer fee in the active unit |
-| `proofFee` | string | proof fee in the active unit |
+| `fee` | string | default wallet transfer and burn fee in the active unit |
+| `proofFee` | string | minimum proof publication fee in the active unit |
 | `proofPending` | string | challenge-proof transaction ID in the local mempool, or empty |
 | `activationDelay` | integer | blocks from the proof block to the QDAY block |
 | `blockReward` | string | reward for the next block in the active unit |
@@ -140,6 +141,10 @@ Returns node, chain, wallet, mining and network state.
 
 When `balanceReady` is false, `balance`, `immature` and `pending` are null and
 must not be treated as zero.
+
+`relayError` describes network delivery. It does not mean that unlocking failed
+or that a locally accepted transaction was rejected. The wallet retries pending
+transactions without requiring another send request.
 
 `STOP` means the local worker is off. `MINE` means it is mining blocks before
 the QDAY event. `DEFEND` means it continues mining blocks after QDAY and also
@@ -269,16 +274,34 @@ the address derived from the imported phrase:
 `fromAddress` must equal the address currently returned by `/api/status`.
 `unit` must equal the current status unit. These checks stop a reviewed request
 from being sent after the wallet or QDAY denomination changes. The wallet
-selects at most 64 confirmed inputs, adds change, applies the fixed fee, signs
-with both keys, places the transaction in its mempool and broadcasts it.
+selects at most 128 confirmed inputs, preferring larger outputs, adds change,
+applies the selected fee and signs with both keys. It places the transaction in its
+mempool and schedules persistent broadcast. The response does not wait for a
+remote peer or for confirmation.
+
+The optional `fee` field is a decimal string in QDAY, using the same `unit` as
+`amount`. For example, `"fee":"0.25"` pays the miner a total of 0.25 QDAY.
+It is added to the amount deducted from the wallet, not subtracted from the
+recipient's payment. Omitting `fee`, or sending an empty string, uses the
+standard wallet fee returned by `/api/status`. The GUI calls this mode Auto.
+
+Custom fees must be non-negative, fit the atomic currency range and be covered
+by the selected confirmed inputs along with the amount. Exponents, commas and
+excess decimal places are rejected. Zero is allowed for ordinary transfers and
+burns. A custom fee creates a new transaction; it does not modify or replace a
+transaction already in the mempool.
 
 ```json
 {"transaction":"<64-hex-character transaction ID>"}
 ```
 
-The wallet saves locally created transactions until they confirm and
-rebroadcasts them after chain changes, periodically, and after a node restart.
-It stops rebroadcasting after 48 hours. The chain mempool has no fixed expiry;
+The wallet keeps signed local transactions for 48 hours and broadcasts pending
+ones after chain changes, periodically, and after a node restart. Confirmation
+pauses broadcast; if a reorganization removes that confirmation within the
+retry period, broadcast resumes. Proofs are updated in batches when the wallet
+has been offline for many blocks. Missing chain history postpones the retry.
+
+The wallet stops rebroadcasting after 48 hours. The chain mempool has no fixed expiry;
 a valid transaction can remain pending longer if no miner includes it. See the
 [rebroadcast implementation](../node/qday/rebroadcast.go).
 
@@ -293,9 +316,10 @@ a valid transaction can remain pending longer if no miner includes it. See the
 ```
 
 Builds and broadcasts an irreversible transfer of `amount` to the protocol's
-all-zero void address. The wallet adds change, pays its normal 0.001 QDAY
-transfer fee under the original denomination, and signs every input with both
-wallet keys. At most 64 inputs are selected.
+all-zero void address. The wallet adds change, pays its normal transfer fee or
+the optional custom `fee`, and signs every input with both
+wallet keys. At most 128 inputs are selected. Ordinary sends and burns select
+larger outputs first.
 
 `fromAddress` and `unit` have the same stale-review protection as `/api/send`.
 The response contains the transaction ID. The amount appears in
@@ -339,7 +363,10 @@ broadcast anything:
 ```
 
 Builds, funds, signs and broadcasts the challenge-proof transaction through the
-normal mempool. The confirmed balance must cover the 1 QDAY proof fee. The
+normal mempool. The optional `fee` field uses the same decimal format as sends
+and burns, but cannot be below the minimum publication fee returned as
+`proofFee` by `/api/status` (1 QDAY before PQ Day). Omitting it uses that minimum.
+The confirmed balance must cover the selected fee. The
 response contains its transaction ID.
 
 ### `POST /api/defend`

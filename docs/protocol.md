@@ -35,6 +35,25 @@ the QDAY binary encoding.
 Blocks and transactions received from peers pass through the same validation
 path as blocks found by the local miner and transactions created by the wallet.
 
+The node allows at most eight concurrent incoming transaction-set or block-outline
+payloads, with at most two from one connection. Requests beyond this limit are
+closed before decoding; header and peer-discovery requests use separate slots.
+These are local resource limits, not consensus rules. Transaction-set RPCs
+remain limited to 5,000,000 encoded bytes.
+
+Pool synchronization groups payments into bounded transaction sets. Each set
+includes its unconfirmed parents in dependency order, with shared parents
+included once per packet. A dependency chain larger than one request must wait
+for some parents to confirm before the whole chain can propagate to a fresh
+node.
+
+When a block is removed by a chain reorganization, its ordinary transactions
+return to the local pool with updated accumulator proofs. They are validated
+against the replacement chain; conflicting spends and transactions whose
+inputs no longer exist are discarded. Restoration is bounded by the normal
+pool capacity of ten maximum-weight blocks. The pool is temporary storage and
+does not guarantee that any particular transaction will be retained or mined.
+
 ## Bootstrap and discovery
 
 Mainnet publishes three bootstrap endpoints:

@@ -9,7 +9,7 @@ block heights.
 | Parameter | Value |
 | --- | --- |
 | Network name | `qday-mainnet` |
-| Software release | `0.7.1` |
+| Software release | `0.7.2` |
 | Mainnet start time (UTC) | `2026-09-11T06:59:00Z` |
 | Genesis ID | `d71aebcb687c2fca4d3a5819e6c632efa7d46731395970fce081f3dc57606a40` |
 | Manifest | `qday-mainnet.json` |
@@ -86,13 +86,15 @@ event. Fees move existing units. Decay can permanently reduce spendable supply.
 | Seed phrase | 24 words, English BIP39 word list |
 | Seed entropy/checksum | 256-bit entropy + 8-bit checksum |
 | Wallet addresses per seed phrase | `1` |
-| Wallet transfer fee | `0.001 QDAY` before QDAY; `1,000 QDAY` after QDAY |
+| Default wallet transfer fee | `0.001 QDAY` before QDAY; `1,000 QDAY` after QDAY |
 | Inputs accepted by consensus | at most `128` |
 | Outputs accepted by consensus | at most `128` |
-| Inputs selected by the bundled wallet | at most `64` per transfer |
+| Inputs selected by the bundled wallet | at most `128` per transfer |
 
-The fee has the same atomic value on both sides of the QDAY event. Its displayed
+The default fee has the same atomic value on both sides of the QDAY event. Its displayed
 amount changes because the denomination changes.
+Send, burn and proof publication also accept a custom total fee in the current
+QDAY denomination. The minimum proof publication fee remains a consensus rule.
 
 ## The QDAY event
 

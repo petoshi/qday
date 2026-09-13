@@ -355,6 +355,7 @@ type Syncer struct {
 
 	inflightMu     sync.Mutex
 	inflightSubnet map[string]int // subnet key -> live inbound handler count
+	relayPayloads  relayPayloadBudget
 }
 
 func (s *Syncer) resync(p *Peer, reason string) {
@@ -511,10 +512,24 @@ func (s *Syncer) runPeer(p *Peer) {
 			s.log.Debug("rejected rpc: subnet in-flight limit reached", zap.Stringer("peer", p), zap.Stringer("rpc", id), zap.String("subnet", subnet), zap.Int("limit", s.config.MaxInflightRPCsPerSubnet))
 			continue
 		}
+		largePayload := false
+		switch gateway.ObjectForID(id).(type) {
+		case *gateway.RPCRelayV2TransactionSet, *gateway.RPCRelayV2BlockOutline:
+			largePayload = true
+		}
+		if largePayload && !s.relayPayloads.acquire(p) {
+			s.releaseInflight(subnet)
+			<-inflight
+			stream.Close()
+			continue
+		}
 
 		go func() {
 			defer func() { <-inflight }()
 			defer s.releaseInflight(subnet)
+			if largePayload {
+				defer s.relayPayloads.release(p)
+			}
 
 			done, err := s.tg.Add()
 			if err != nil {
@@ -960,6 +975,9 @@ func txpoolFingerprint(txns []types.V2Transaction) types.Hash256 {
 }
 
 func (s *Syncer) txpoolRelayPlan(basis types.ChainIndex, txns []types.V2Transaction) ([]txpoolRelaySet, error) {
+	if cs, ok := s.cm.State(basis.ID); ok && cs.Network.Qday != nil {
+		return qdayPoolRelayPlan(basis, txns, 5e6)
+	}
 	sets := make([]txpoolRelaySet, 0, len(txns))
 	for i := range txns {
 		setBasis, set, err := s.cm.V2TransactionSet(basis, txns[i])

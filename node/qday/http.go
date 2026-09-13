@@ -170,6 +170,7 @@ func (s *Service) Handler(token string, listenAddress string) http.Handler {
 			Threads        int    `json:"threads"`
 			Address        string `json:"address"`
 			Amount         string `json:"amount"`
+			Fee            string `json:"fee"`
 			Witness        string `json:"witness"`
 			Unit           string `json:"unit"`
 		}
@@ -232,7 +233,7 @@ func (s *Service) Handler(token string, listenAddress string) http.Handler {
 				respond(nil, err)
 				return
 			}
-			id, err := s.submitFor(r.Context(), body.FromAddress, types.QdayAddress{}, amount, submitBurn, nil)
+			id, err := s.submitReviewed(r.Context(), body.FromAddress, body.Unit, body.Fee, types.QdayAddress{}, amount, submitBurn, nil)
 			respond(map[string]any{"transaction": id}, err)
 		case "/api/send":
 			to, err := types.ParseQdayAddress(strings.TrimSpace(body.Address))
@@ -250,7 +251,7 @@ func (s *Service) Handler(token string, listenAddress string) http.Handler {
 				respond(nil, err)
 				return
 			}
-			id, err := s.submitFor(r.Context(), body.FromAddress, to, amount, submitTransfer, nil)
+			id, err := s.submitReviewed(r.Context(), body.FromAddress, body.Unit, body.Fee, to, amount, submitTransfer, nil)
 			respond(map[string]any{"transaction": id}, err)
 		case "/api/proof", "/api/proof/verify":
 			var witness [32]byte
@@ -274,7 +275,7 @@ func (s *Service) Handler(token string, listenAddress string) http.Handler {
 				respond(nil, errors.New("QDAY denomination changed; review the proof fee again"))
 				return
 			}
-			id, err := s.submitFor(r.Context(), body.FromAddress, types.QdayAddress{}, types.ZeroCurrency, submitProof, &witness)
+			id, err := s.submitReviewed(r.Context(), body.FromAddress, body.Unit, body.Fee, types.QdayAddress{}, types.ZeroCurrency, submitProof, &witness)
 			respond(map[string]any{"transaction": id}, err)
 		default:
 			http.NotFound(w, r)

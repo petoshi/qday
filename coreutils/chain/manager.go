@@ -390,6 +390,9 @@ func (m *Manager) revertTip() error {
 	cru := consensus.RevertBlock(cs, b, *bs)
 	m.store.RevertBlock(cs, cru)
 	m.revertPoolUpdate(cru, cs)
+	if cs.Network.Qday != nil {
+		m.restoreQdayPool(b.V2Transactions(), cs)
+	}
 	m.tipState = cs
 	return nil
 }
@@ -514,12 +517,14 @@ func (m *Manager) reorgTo(index types.ChainIndex) error {
 			}
 			m.txpool.lastReverted = append(m.txpool.lastReverted, txn)
 		}
-		m.txpool.lastRevertedV2 = m.txpool.lastRevertedV2[:0]
-		for _, txn := range b.V2Transactions() {
-			if txn.MinerFee.IsZero() {
-				continue
+		if m.tipState.Network.Qday == nil {
+			m.txpool.lastRevertedV2 = m.txpool.lastRevertedV2[:0]
+			for _, txn := range b.V2Transactions() {
+				if txn.MinerFee.IsZero() {
+					continue
+				}
+				m.txpool.lastRevertedV2 = append(m.txpool.lastRevertedV2, txn)
 			}
-			m.txpool.lastRevertedV2 = append(m.txpool.lastRevertedV2, txn)
 		}
 	}
 	return nil
@@ -711,6 +716,9 @@ func (m *Manager) revalidatePool() {
 	m.txpool.txns = filtered
 
 	m.txpool.v2txns = append(m.txpool.v2txns, m.txpool.lastRevertedV2...)
+	if m.tipState.Network.Qday != nil {
+		updateQdayEphemeralHeights(m.txpool.v2txns, m.tipState.Index.Height+1)
+	}
 	v2filtered := m.txpool.v2txns[:0]
 	for _, txn := range m.txpool.v2txns {
 		id := txn.ID()
@@ -816,8 +824,11 @@ func (m *Manager) computeParentMap() map[types.Hash256]int {
 func updateTxnProofs(txn *types.V2Transaction, updateElementProof func(*types.StateElement), numLeaves uint64) (valid bool) {
 	valid = true
 	updateProof := func(e *types.StateElement) {
+		if e.LeafIndex == types.UnassignedLeafIndex {
+			return // an unconfirmed parent has no accumulator proof yet
+		}
 		valid = valid && e.LeafIndex < numLeaves
-		if !valid || e.LeafIndex == types.UnassignedLeafIndex {
+		if !valid {
 			return
 		}
 		*e = e.Copy()
@@ -839,6 +850,20 @@ func updateTxnProofs(txn *types.V2Transaction, updateElementProof func(*types.St
 		}
 	}
 	return
+}
+
+// QDAY commits an ordinary output's birth height in its accumulator leaf.
+// Until the parent confirms, that height is the next block's height. This
+// metadata is not part of the transaction ID or signed transaction semantics.
+func updateQdayEphemeralHeights(txns []types.V2Transaction, height uint64) {
+	for _, txn := range txns {
+		for i := range txn.SiacoinInputs {
+			parent := &txn.SiacoinInputs[i].Parent
+			if parent.StateElement.LeafIndex == types.UnassignedLeafIndex {
+				parent.MaturityHeight = height
+			}
+		}
+	}
 }
 
 func checkFileContractRevisions(txns []types.V2Transaction) error {
@@ -941,6 +966,46 @@ func (m *Manager) revertPoolUpdate(cru consensus.RevertUpdate, cs consensus.Stat
 	m.txpool.v2txns = rem
 }
 
+// Restore each reverted block at its parent basis so subsequent revert/apply
+// updates advance its proofs with the rest of the pool. Earlier block parents
+// precede their descendants. Keep the ordinary pool weight bound during deep
+// reorganizations; a block's coinbase marker never belongs in the pool.
+func (m *Manager) restoreQdayPool(txns []types.V2Transaction, cs consensus.State) {
+	var restored []types.V2Transaction
+	seen := make(map[types.TransactionID]bool)
+	weight, limit := uint64(0), cs.MaxBlockWeight()*10
+	add := func(txn types.V2Transaction, copyTxn bool) bool {
+		id := txn.ID()
+		if seen[id] || len(txn.SiacoinInputs) == 0 {
+			return true
+		}
+		w := cs.V2TransactionWeight(txn)
+		if w > limit-weight {
+			return false
+		}
+		if copyTxn {
+			txn = txn.DeepCopy()
+		}
+		restored = append(restored, txn)
+		seen[id] = true
+		weight += w
+		return true
+	}
+	for _, txn := range txns {
+		if !add(txn, true) {
+			break
+		}
+	}
+	for _, txn := range m.txpool.v2txns {
+		if !add(txn, false) {
+			break
+		}
+	}
+	m.txpool.v2txns = restored
+	m.txpool.weight = weight
+	m.txpool.ms = nil
+}
+
 func (m *Manager) applyPoolUpdate(cau consensus.ApplyUpdate, cs consensus.State) {
 	// applying a block can make ephemeral elements in the txpool non-ephemeral
 	var newElements map[types.Hash256]types.StateElement
@@ -978,6 +1043,9 @@ func (m *Manager) applyPoolUpdate(cau consensus.ApplyUpdate, cs consensus.State)
 	for _, txn := range m.txpool.v2txns {
 		for i, si := range txn.SiacoinInputs {
 			replaceEphemeral(types.Hash256(si.Parent.ID), &txn.SiacoinInputs[i].Parent.StateElement)
+			if cs.Network.Qday != nil && si.Parent.StateElement.LeafIndex == types.UnassignedLeafIndex && txn.SiacoinInputs[i].Parent.StateElement.LeafIndex != types.UnassignedLeafIndex {
+				txn.SiacoinInputs[i].Parent.MaturityHeight = cs.Index.Height
+			}
 		}
 		for i, si := range txn.SiafundInputs {
 			replaceEphemeral(types.Hash256(si.Parent.ID), &txn.SiafundInputs[i].Parent.StateElement)
@@ -1172,6 +1240,16 @@ func (m *Manager) V2TransactionSet(basis types.ChainIndex, txn types.V2Transacti
 	defer m.mu.Unlock()
 	m.revalidatePool()
 
+	// Pool parents already have current proofs. Update only the supplied
+	// transaction, otherwise an older basis would be applied to them twice.
+	updated, err := m.updateV2TransactionProofs([]types.V2Transaction{txn}, basis, m.tipState.Index)
+	if err != nil {
+		return types.ChainIndex{}, nil, fmt.Errorf("failed to update transaction set basis: %w", err)
+	} else if len(updated) == 0 {
+		return m.tipState.Index, nil, nil
+	}
+	txn = updated[0]
+
 	// get the transaction's parents
 	parentMap := m.computeParentMap()
 	var parents []types.V2Transaction
@@ -1197,29 +1275,17 @@ func (m *Manager) V2TransactionSet(basis types.ChainIndex, txn types.V2Transacti
 		}
 	}
 
-	// check txn, then keep checking parents until done
+	// Traverse each discovered parent once, including shared ancestors.
 	addParents(txn)
-	for {
-		n := len(parents)
-		for _, txn := range parents {
-			addParents(txn)
-		}
-		if len(parents) == n {
-			break
-		}
+	for i := 0; i < len(parents); i++ {
+		addParents(parents[i])
 	}
-	// reverse so that parents always come before children
-	for i := range len(parents) / 2 {
-		j := len(parents) - 1 - i
-		parents[i], parents[j] = parents[j], parents[i]
-	}
-
-	// update the transaction's basis to match tip
-	txns, err := m.updateV2TransactionProofs(append(parents, txn), basis, m.tipState.Index)
-	if err != nil {
-		return types.ChainIndex{}, nil, fmt.Errorf("failed to update transaction set basis: %w", err)
-	}
-	return m.tipState.Index, txns, nil
+	// Reversing discovery order does not topologically sort a graph whose
+	// direct parents depend on one another. Pool order is already validated.
+	sort.Slice(parents, func(i, j int) bool {
+		return m.txpool.indices[parents[i].ID()] < m.txpool.indices[parents[j].ID()]
+	})
+	return m.tipState.Index, append(parents, txn), nil
 }
 
 func (m *Manager) checkTxnSet(txns []types.Transaction, v2txns []types.V2Transaction) (bool, error) {
@@ -1338,6 +1404,9 @@ func (m *Manager) updateV2TransactionProofs(txns []types.V2Transaction, from, to
 					continue
 				}
 				updated[i].SiacoinInputs[j].Parent.StateElement = se.Share()
+				if cs.Network.Qday != nil {
+					updated[i].SiacoinInputs[j].Parent.MaturityHeight = cs.Index.Height
+				}
 			}
 
 			// update the state elements for any confirmed ephemeral elements
@@ -1358,6 +1427,9 @@ func (m *Manager) updateV2TransactionProofs(txns []types.V2Transaction, from, to
 			rem = append(rem, updated[i])
 		}
 		updated = rem
+	}
+	if basisState.Network.Qday != nil && from != to {
+		updateQdayEphemeralHeights(updated, to.Height+1)
 	}
 	return
 }
@@ -1446,6 +1518,22 @@ func (m *Manager) AddV2PoolTransactions(basis types.ChainIndex, txns []types.V2T
 	defer m.mu.Unlock()
 	m.revalidatePool()
 
+	// A repeated announcement cannot change an already accepted transaction.
+	// Avoid repeating expensive hybrid signature checks for known IDs. The
+	// stored, verified witnesses and proofs are retained, never the caller's.
+	if len(txns) > 0 {
+		allKnown := true
+		for _, txn := range txns {
+			if _, ok := m.txpool.indices[txn.ID()]; !ok {
+				allKnown = false
+				break
+			}
+		}
+		if allKnown {
+			return true, nil
+		}
+	}
+
 	// take ownership of Merkle proofs, and update them to the current tip
 	txns = slices.Clone(txns)
 	for i := range txns {
@@ -1459,12 +1547,21 @@ func (m *Manager) AddV2PoolTransactions(basis types.ChainIndex, txns []types.V2T
 		return known, err
 	}
 
+	startLen, startWeight := len(m.txpool.v2txns), m.txpool.weight
 	for _, txn := range txns {
 		txid := txn.ID()
 		if _, ok := m.txpool.indices[txid]; ok {
 			continue // skip transactions already in the pool
 		}
 		if err := consensus.ValidateV2Transaction(m.txpool.ms, txn); err != nil {
+			// checkTxnSet validates the set in isolation. A later member can
+			// still conflict with an existing pool spend; undo the entire set.
+			for _, added := range m.txpool.v2txns[startLen:] {
+				delete(m.txpool.indices, added.ID())
+			}
+			clear(m.txpool.v2txns[startLen:])
+			m.txpool.v2txns = m.txpool.v2txns[:startLen]
+			m.txpool.weight = startWeight
 			m.txpool.ms = nil // force revalidation next time the pool is queried
 			return false, fmt.Errorf("transaction %v conflicts with pool: %w", txid, err)
 		}

@@ -120,17 +120,45 @@ async function main() {
   if(!await evaluate('!document.getElementById("view-receive").hidden && document.getElementById("address").textContent.startsWith("qday1p") && document.getElementById("address").textContent.length === 64'))throw Error('Receive view failed');
   await evaluate('document.querySelector("nav [data-view=send]").click();document.getElementById("destination").value=document.getElementById("address").textContent;document.getElementById("amount").value="1";document.getElementById("sendForm").requestSubmit()');
   await until(()=>evaluate('document.getElementById("sendReview").open'),'transfer review');
+  if(!await evaluate('transferDraft.fee===latest.fee && document.getElementById("reviewTotal").textContent==="1.001 QDAY"'))throw Error('Automatic fee or transfer total is incorrect');
   await evaluate('document.getElementById("cancelTransfer").click()');
   await until(()=>evaluate('!document.getElementById("sendReview").open'),'cancel review');
+  await evaluate(`document.querySelector('[data-fee="send"] [data-fee-mode="custom"]').click();document.querySelector('[data-fee="send"] [data-fee-input]').value='2.75'`);
   await evaluate('document.getElementById("sendForm").requestSubmit()');
   await until(()=>evaluate('document.getElementById("sendReview").open'),'transfer second review');
+  if(!await evaluate('transferDraft.fee==="2.75" && document.getElementById("reviewFee").textContent==="2.75 QDAY" && document.getElementById("reviewTotal").textContent==="3.75 QDAY"'))throw Error('Custom fee changed between entry and review');
+  await screenshot('wallet-custom-fee-review.png');
   await until(()=>evaluate('!document.getElementById("confirmTransfer").disabled'),'transfer ready');
   await evaluate('document.getElementById("confirmTransfer").click()');
   try {await until(()=>evaluate('document.getElementById("message").textContent.startsWith("Submitted;")'),'signed browser transfer');}
   catch(e){throw Error(e.message+': '+await evaluate('JSON.stringify({message:document.getElementById("message").textContent,busy,draft:!!transferDraft,disabled:document.getElementById("confirmTransfer").disabled})'));}
   await until(()=>evaluate('latest.balanceReady && latest.pending==="0"'),'transfer mined');
+  if(!await evaluate(`document.querySelector('[data-fee="send"]').dataset.mode==='auto'`))throw Error('Completed transfer retained a custom fee');
   await evaluate('document.getElementById("stop").click()');
   await until(()=>evaluate('latest.mode==="STOP"'),'pause before proof review');
+  await evaluate(`view('settings');document.getElementById('burnAmount').value='1';document.querySelector('[data-fee="burn"] [data-fee-mode="custom"]').click();document.querySelector('[data-fee="burn"] [data-fee-input]').value='-1';document.getElementById('burnForm').requestSubmit()`);
+  if(!await evaluate(`!document.getElementById('burnReview').open && document.getElementById('messageText').textContent.includes('Fee must be')`))throw Error('Negative custom fee reached burn confirmation');
+  await evaluate(`document.querySelector('[data-fee="burn"] [data-fee-input]').value='0.25';document.getElementById('burnForm').requestSubmit()`);
+  await until(()=>evaluate('document.getElementById("burnReview").open'),'custom burn fee review');
+  if(!await evaluate(`burnDraft.fee==='0.25' && document.getElementById('burnReviewTotal').textContent==='1.25 QDAY'`))throw Error('Burn review lost the custom fee');
+  await evaluate('document.getElementById("cancelBurn").click()');
+  const feeBoundaries=await evaluate(`(() => {
+    const proof=document.querySelector('[data-fee="proof"]');setFeeMode(proof,'custom');proof.querySelector('[data-fee-input]').value='0.5';
+    let minimum=false;try{selectedFee('proof',latest.proofFee);}catch(e){minimum=e.message.includes('at least');}
+    renderFees({...latest,unit:'1000000000000000000'});
+    const reset=[...document.querySelectorAll('[data-fee]')].every(f=>f.dataset.mode==='auto'&&!f.querySelector('[data-fee-input]').value);
+    renderFees(latest);return minimum&&reset;
+  })()`);
+  if(!feeBoundaries)throw Error('Proof fee minimum or denomination reset failed');
+  await evaluate(`view('send');document.querySelector('[data-fee="send"] [data-fee-mode="custom"]').click();document.querySelector('[data-fee="send"] [data-fee-input]').value='0.25'`);
+  await screenshot('wallet-custom-fee-desktop.png');
+  for(const width of [320,390]) {
+    await cdp('Emulation.setDeviceMetricsOverride',{width,height:844,deviceScaleFactor:1,mobile:true});
+    if(await evaluate('document.documentElement.scrollWidth>innerWidth'))throw Error('Custom fee form overflows at '+width);
+  }
+  await screenshot('wallet-custom-fee-mobile.png',390);
+  await evaluate(`resetFee('send')`);
+  await cdp('Emulation.setDeviceMetricsOverride',{width:1440,height:1120,deviceScaleFactor:1,mobile:false});
   for(const scalar of ['01','02']) {
     await evaluate(`view("survival");document.getElementById("proofWitness").value="${scalar}"+"00".repeat(31);document.getElementById("proofForm").requestSubmit()`);
     await until(()=>evaluate('document.getElementById("message").textContent.includes("does not solve") && !busy'),'invalid proof rejected');
@@ -171,6 +199,7 @@ async function main() {
   await evaluate('document.getElementById("cancelLock").click()');
   if(!await evaluate('latest.unlocked && !document.getElementById("lockPrompt").open'))throw Error('Cancel locked the wallet');
   await evaluate('document.getElementById("lock").click();document.getElementById("confirmLock").click()');
+  if(!await evaluate('document.body.classList.contains("wallet-locked") && document.getElementById("unlock").open && document.querySelector(".workspace").inert'))throw Error('Lock click left wallet content visible while awaiting the node');
   await until(()=>evaluate('!busy && !latest.unlocked && document.getElementById("lockText").textContent==="Locked"'),'browser wallet lock');
   const lockScreen = 'document.getElementById("unlock").matches(":modal") && document.body.classList.contains("wallet-locked") && document.querySelector(".workspace").inert && document.querySelector(".sidebar").inert && getComputedStyle(document.getElementById("app")).visibility==="hidden" && document.querySelectorAll("dialog[open]").length===1';
   if(!await evaluate(lockScreen))throw Error('Lock did not immediately hide and block the wallet');
@@ -194,8 +223,53 @@ async function main() {
   await evaluate('document.getElementById("unlockPassword").value="incorrect-test-password";document.getElementById("unlockForm").requestSubmit()');
   await until(()=>evaluate('!busy && !!document.querySelector("#unlock .dialog-message.error")?.textContent'),'wrong unlock password');
   if(!await evaluate(lockScreen))throw Error('Wrong password exposed wallet content');
+  const errorIsolation = await evaluate(`(() => {
+    const state=latest, local=document.querySelector('#unlockForm .dialog-message');
+    const error=local.textContent;
+    render({...state,lastError:'background diagnostic test'});
+    const kept=local.textContent===error;
+    render(state);
+    return kept;
+  })()`);
+  if(!errorIsolation)throw Error('Background node diagnostic overwrote the password error');
   await evaluate('document.getElementById("unlockPassword").value="temporary-browser-passphrase";document.getElementById("unlockForm").requestSubmit()');
   await until(()=>evaluate('!busy && latest.unlocked && !document.getElementById("unlock").open && document.getElementById("lockText").textContent==="Unlocked" && !document.getElementById("start").disabled && !document.querySelector(".workspace").inert && getComputedStyle(document.getElementById("app")).visibility!=="hidden"'),'browser unlock');
+  const noticeIsolation=await evaluate(`(() => {
+    const state=latest;
+    render({...state,lastError:'one-time diagnostic test'});
+    const shown=document.getElementById('messageText').textContent==='one-time diagnostic test';
+    document.getElementById('dismissMessage').click();
+    for(let i=0;i<3;i++)render({...state,lastError:'one-time diagnostic test'});
+    const dismissed=document.getElementById('message').hidden;
+    render({...state,lastError:'different diagnostic test'});
+    const next=document.getElementById('messageText').textContent==='different diagnostic test';
+    render(state);message();
+    return shown&&dismissed&&next;
+  })()`);
+  if(!noticeIsolation)throw Error('Dismissed diagnostics repeated or hid a different error');
+  const reconnect=await evaluate(`(async () => {
+    await polling;
+    const originalFetch=window.fetch;
+    window.fetch=async()=>{throw new Error('temporary connection test');};
+    try {
+      await refresh();
+      const offline=!connected&&document.getElementById('sync').textContent==='OFFLINE';
+      document.getElementById('dismissMessage').click();
+      await refresh();
+      return offline&&document.getElementById('message').hidden;
+    } finally {window.fetch=originalFetch;await refresh();}
+  })()`);
+  if(!reconnect||!await evaluate('connected && !document.getElementById("start").disabled'))throw Error('Connection failure repeated notifications or left controls stuck after recovery');
+  const boundedRequest=await evaluate(`(async () => {
+    await polling;
+    const originalFetch=window.fetch,originalTimer=window.setTimeout;
+    window.fetch=(_url,options)=>new Promise((_resolve,reject)=>options.signal.addEventListener('abort',()=>reject(new DOMException('aborted','AbortError'))));
+    window.setTimeout=(fn,ms,...args)=>originalTimer(fn,ms===15000?30:ms,...args);
+    try {await api('status');return false;}
+    catch(error){return error.message==='Local node is not responding. Reconnecting…';}
+    finally{window.fetch=originalFetch;window.setTimeout=originalTimer;}
+  })()`);
+  if(!boundedRequest)throw Error('Unresponsive status request did not time out');
   for(const width of [320,390,768,1440]) {
     await cdp('Emulation.setDeviceMetricsOverride',{width,height:844,deviceScaleFactor:1,mobile:width<650});
     if(await evaluate('document.documentElement.scrollWidth>innerWidth || document.getElementById("lock").getBoundingClientRect().left<0 || document.getElementById("quit").getBoundingClientRect().right>innerWidth'))throw Error('Lock/EXIT top bar overflow at '+width);
@@ -291,6 +365,7 @@ async function main() {
   const report={result:'PASS',checks:['genesis inscription committed beside fixed consensus data','pre-genesis mining button disabled with a local countdown','automatic launcher authentication','one-use URL removed','separate browser credential','embedded artwork and fonts','modal onboarding with dimmed backdrop and stable dashboard','mobile onboarding without overflow','invalid recovery checksum and password mismatch rejected inside modal','24-word encrypted wallet creation','explicit plaintext recovery download','backup acknowledgement clears secret fields','mainnet parameters and native CPU mining','confirmed funding from genesis premine','functional navigation','receive address','transfer review and cancel','signed transfer','invalid proof rejected','known test solution rejected by mainnet','live P2P and router diagnostics','STOP, lock and unlock modal','all mobile views without horizontal overflow','EXIT QDAY closes launcher and native node','recovery words restore same address with different password on fresh node','seed phrase export requires password reauthentication','explicit seed phrase copy and download','settings import replaces the active wallet without automatic backup','invalid import preserves current keys','saved seed phrase returns to the previous address','cancel and successful import clear secret fields','all existing font sizes increased by 2px','EXIT QDAY stays in the top right while scrolling','no browser exceptions']};
   report.checks.push('open/closed lock icons follow actual wallet state','lock confirmation and cancel, followed immediately by mandatory unlock screen','locked content is hidden and inert to pointer, keyboard and navigation','Escape, backdrop clicks, wrong passwords and page reload cannot dismiss the lock screen','external lock clears an open seed phrase dialog','EXIT QDAY works from the lock screen','disabled mining explains its cause','top bar fits 320, 390, 768 and 1440 pixels','index catchup retains labelled balance while real zero and wallet/denomination changes still update','manual peer validation and connection in Settings','restart confirmation, new native PID, automatic browser launch and same locked wallet');
   report.checks.push('locked screen accepts any valid QDAY seed phrase','locked import warns before replacing the wallet and retains no backup','invalid locked import preserves encrypted keys','locked seed import fits 320 and 390 pixel screens with reachable scrolling actions');
+  report.checks.push('Auto and Custom fee entry, exact total and signed custom-fee send','burn fee review rejects negative values and shows the exact total','proof fee minimum and denomination changes reset fee selection','custom fee controls fit 320 and 390 pixel screens','completed sends reset fee selection to Auto','background errors do not overwrite password errors','dismissed background errors stay dismissed','failed status requests time out and reconnect controls recover');
   fs.writeFileSync(path.join(root,'build/browser-report.json'),JSON.stringify(report,null,2)+'\n');console.log(JSON.stringify(report,null,2));
 }
 main().catch(err=>{console.error(err.message);process.exitCode=1;}).finally(async()=>{if(socket)socket.close();for(const p of processes){p.kill('SIGTERM');}await sleep(700);for(const p of processes){if(p.exitCode===null)p.kill('SIGKILL');}await sleep(150);fs.rmSync(temp,{recursive:true,force:true});});
