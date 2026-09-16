@@ -358,6 +358,9 @@ its own genesis and network marker. The pieces worth knowing:
   bootstrap connections and return when their peer set dies.
 - **Local API:** authenticated, loopback-only wallet control. It is not an
   exchange or explorer API wearing a fake moustache.
+- **Exchange custody:** [`qday-walletd`](https://github.com/petoshi/qday-walletd)
+  runs a headless validating node with deterministic deposit addresses and
+  idempotent withdrawals.
 
 The exact rules are short enough to read:
 

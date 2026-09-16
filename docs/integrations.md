@@ -24,6 +24,7 @@ This guide calls `h + 6` the **QDAY block**.
 | Sia Stratum miner | Yes, through a bridge | Run [`qday-stratum`](https://github.com/petoshi/qday-stratum) beside an unlocked QDAY node |
 | Sia explorer assumptions | No | Track the QDAY block, changing values, shields and decay |
 | Sia JSON APIs | No | The shipped API is local and controls one wallet |
+| Exchange custody daemon | No | Run [`qday-walletd`](https://github.com/petoshi/qday-walletd) or implement the same QDAY key and accounting rules |
 | Supply RPC | No | Read QDAY issuance and burns from `GET /api/supply` |
 
 An unmodified Sia node, wallet, pool controller or indexer cannot join or
@@ -130,9 +131,11 @@ format byte `1`. Store its decoded 32-byte spending-rule hash as the receiver
 identifier. The parser accepts a 141-character public-key form for compatibility,
 but a deposit system should convert it to the 64-character form.
 
-QDAY has no destination tag or memo. The bundled wallet derives one address
-from one 24-word seed phrase; it does not derive a tree of accounts. A custodian
-that needs one address per customer must build its own key manager and indexer.
+QDAY has no destination tag or memo. The desktop wallet derives one address
+from one 24-word seed phrase. The separate
+[`qday-walletd`](https://github.com/petoshi/qday-walletd) custody daemon derives
+deterministic per-customer addresses from one encrypted master seed and indexes
+them against its own fully validating node.
 
 ### Signing
 
@@ -235,10 +238,15 @@ reorganization can remove an unfinalized proof or change the scheduled QDAY
 block. Systems must derive `qdayHeight` from the currently selected chain
 instead of caching the first proof they see.
 
-The bundled local API controls one wallet. It does not generate deposit
-addresses, accept raw transactions, return historical blocks or send webhook
-notifications. Production custody therefore needs a separate service built on
-the QDAY chain and wallet libraries.
+The desktop wallet API controls one address and is not a custody backend. Use
+[`qday-walletd`](https://github.com/petoshi/qday-walletd) for deterministic
+deposit addresses, exact atomic balances, an indexed deposit feed and
+idempotent withdrawals. It signs every input with both QDAY keys, persists
+pending transactions, updates their accumulator proofs, rebroadcasts them after
+restarts or reorganizations and runs automatic DEFEND after the QDAY block.
+Its [API](https://github.com/petoshi/qday-walletd/blob/main/docs/API.md) and
+[operations guide](https://github.com/petoshi/qday-walletd/blob/main/docs/operations.md)
+define the integration and backup rules.
 
 ## Block explorers
 
