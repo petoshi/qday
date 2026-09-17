@@ -840,6 +840,15 @@ func (s *Service) Status() (map[string]any, error) {
 	}
 	unit := cs.QdayUnits(cs.Index.Height)
 	r := map[string]any{"network": cs.Network.Name, "development": s.Manifest.Development, "height": cs.Index.Height, "genesis": s.Manifest.Genesis.ID(), "genesisTimestamp": s.Manifest.Genesis.Timestamp.Format(time.RFC3339), "genesisReady": genesisWait == 0, "genesisWaitSeconds": int64((genesisWait + time.Second - 1) / time.Second), "scanHeight": scan.Height, "synced": scan == cs.Index, "qdayHeight": cs.QdayHeight, "qday": cs.QdayActive(cs.Index.Height), "canary": fmt.Sprintf("%x", cs.Network.Qday.Canary), "unlocked": unlocked, "hasWallet": pub != (types.QdayAddress{}), "mode": mode, "threads": threads, "maxThreads": min(runtime.NumCPU(), 256), "peers": peers, "blocksFound": s.blocks.Load(), "lastError": last, "hashrate": float64(0), "balanceReady": false, "balance": nil, "immature": nil, "pending": nil, "fee": FormatAmount(types.HastingsPerSiacoin.Div64(1000), unit)}
+	upgradeHeight := cs.Network.Qday.V1Height
+	upgradeActive := cs.QdayV1Active(cs.Index.Height)
+	var blocksUntilUpgrade uint64
+	if upgradeHeight > cs.Index.Height {
+		blocksUntilUpgrade = upgradeHeight - cs.Index.Height
+	}
+	r["protocolActivationHeight"] = upgradeHeight
+	r["protocolActive"] = upgradeActive
+	r["blocksUntilProtocolActivation"] = blocksUntilUpgrade
 	r["unit"] = unit.ExactString()
 	r["relayError"] = relayError
 	r["canRestart"] = s.RestartEnabled

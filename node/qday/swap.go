@@ -292,6 +292,21 @@ func (s *Service) spendAtomicSwap(ctx context.Context, request AtomicSwapSpendRe
 			return types.TransactionID{}, err
 		}
 	}
+	id := txn.ID()
+	for _, pending := range s.CM.V2PoolTransactions() {
+		for _, input := range pending.SiacoinInputs {
+			if input.Parent.ID != outputID {
+				continue
+			}
+			if pending.ID() != id {
+				return types.TransactionID{}, errors.New("atomic-swap output is already spent by another pending transaction")
+			}
+			if err := s.rememberBroadcast(s.CM.Tip(), []types.V2Transaction{pending}); err != nil {
+				s.setError(fmt.Errorf("failed to save pending atomic swap for rebroadcast: %w", err))
+			}
+			return id, nil
+		}
+	}
 	current := s.CM.TipState()
 	basis := current.Index
 	txns, err := s.CM.UpdateV2TransactionSet([]types.V2Transaction{txn}, cs.Index, basis)
@@ -304,7 +319,7 @@ func (s *Service) spendAtomicSwap(ctx context.Context, request AtomicSwapSpendRe
 	if err := s.rememberBroadcast(basis, txns); err != nil {
 		s.setError(fmt.Errorf("failed to save pending atomic swap for rebroadcast: %w", err))
 	}
-	return txn.ID(), nil
+	return id, nil
 }
 
 func (s *Service) ClaimAtomicSwap(ctx context.Context, request AtomicSwapSpendRequest) (types.TransactionID, error) {

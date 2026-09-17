@@ -56,22 +56,23 @@ type MiningStratumTemplate struct {
 // candidate. The header is included as an 80-byte hexadecimal work item for
 // pool controllers that delegate only BLAKE2b nonce search.
 type MiningTemplateResponse struct {
-	Header            string                      `json:"header"`
-	Commitment        types.Hash256               `json:"commitment"`
-	Transactions      []MiningTemplateTransaction `json:"transactions"`
-	MinerPayout       []MiningTemplateTransaction `json:"minerpayout"`
-	PreviousBlockHash string                      `json:"previousblockhash"`
-	LongPollID        string                      `json:"longpollid"`
-	Target            string                      `json:"target"`
-	Height            uint32                      `json:"height"`
-	Timestamp         int64                       `json:"curtime"`
-	Version           uint32                      `json:"version"`
-	Bits              string                      `json:"bits"`
-	WorkNonce         uint64                      `json:"worknonce"`
-	BlockRewardAtomic string                      `json:"blockRewardAtomic"`
-	FeesAtomic        string                      `json:"feesAtomic"`
-	PayoutAtomic      string                      `json:"payoutAtomic"`
-	Stratum           MiningStratumTemplate       `json:"stratum"`
+	Header              string                      `json:"header"`
+	Commitment          types.Hash256               `json:"commitment"`
+	Transactions        []MiningTemplateTransaction `json:"transactions"`
+	MinerPayout         []MiningTemplateTransaction `json:"minerpayout"`
+	PreviousBlockHash   string                      `json:"previousblockhash"`
+	LongPollID          string                      `json:"longpollid"`
+	Target              string                      `json:"target"`
+	Height              uint32                      `json:"height"`
+	Timestamp           int64                       `json:"curtime"`
+	Version             uint32                      `json:"version"`
+	Bits                string                      `json:"bits"`
+	WorkNonce           uint64                      `json:"worknonce"`
+	BlockRewardAtomic   string                      `json:"blockRewardAtomic"`
+	FeesAtomic          string                      `json:"feesAtomic"`
+	PayoutAtomic        string                      `json:"payoutAtomic"`
+	MempoolTransactions int                         `json:"mempoolTransactions"`
+	Stratum             MiningStratumTemplate       `json:"stratum"`
 }
 
 // MiningBlockStatus reports whether a submitted block is known and remains on
@@ -239,22 +240,27 @@ func (s *Service) buildMiningTemplate(workNonce *uint64) (cachedMiningTemplate, 
 	if _, err := rand.Read(longPollEntropy[:]); err != nil {
 		return cachedMiningTemplate{}, err
 	}
+	protocolTransactions := 1
+	if cs.QdayV1Active(cs.Index.Height + 1) {
+		protocolTransactions = 2
+	}
 	response := MiningTemplateResponse{
-		Header:            header,
-		Commitment:        block.Header().Commitment,
-		Transactions:      txns,
-		MinerPayout:       []MiningTemplateTransaction{{Data: payout}},
-		PreviousBlockHash: block.ParentID.String(),
-		LongPollID:        hex.EncodeToString(longPollEntropy[:]),
-		Target:            cs.PoWTarget().String(),
-		Height:            uint32(cs.Index.Height + 1),
-		Timestamp:         block.Timestamp.Unix(),
-		Version:           2,
-		Bits:              compactMiningDifficulty(cs.Difficulty),
-		WorkNonce:         marker.Nonce,
-		BlockRewardAtomic: cs.BlockReward().ExactString(),
-		FeesAtomic:        block.MinerPayouts[0].Value.Sub(cs.BlockReward()).ExactString(),
-		PayoutAtomic:      block.MinerPayouts[0].Value.ExactString(),
+		Header:              header,
+		Commitment:          block.Header().Commitment,
+		Transactions:        txns,
+		MinerPayout:         []MiningTemplateTransaction{{Data: payout}},
+		PreviousBlockHash:   block.ParentID.String(),
+		LongPollID:          hex.EncodeToString(longPollEntropy[:]),
+		Target:              cs.PoWTarget().String(),
+		Height:              uint32(cs.Index.Height + 1),
+		Timestamp:           block.Timestamp.Unix(),
+		Version:             2,
+		Bits:                compactMiningDifficulty(cs.Difficulty),
+		WorkNonce:           marker.Nonce,
+		BlockRewardAtomic:   cs.BlockReward().ExactString(),
+		FeesAtomic:          block.MinerPayouts[0].Value.Sub(cs.BlockReward()).ExactString(),
+		PayoutAtomic:        block.MinerPayouts[0].Value.ExactString(),
+		MempoolTransactions: len(block.V2.Transactions) - protocolTransactions,
 		Stratum: MiningStratumTemplate{
 			Block:           encodedBlock,
 			Coinbase1:       coinbase1,

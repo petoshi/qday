@@ -71,6 +71,12 @@ func TestAtomicSwapWalletClaimAndRefund(t *testing.T) {
 		if err := consensus.ValidateV2Transaction(consensus.NewMidState(s.CM.TipState()), pool[0]); err != nil {
 			t.Fatal("mempool claim failed consensus: ", err)
 		}
+		retried, err := s.ClaimAtomicSwap(context.Background(), AtomicSwapSpendRequest{
+			Contract: contract, Output: view.Outputs[0].ID, FeeAtomic: "0", Secret: hex.EncodeToString(secret[:]),
+		})
+		if err != nil || retried != id || len(s.CM.V2PoolTransactions()) != 1 {
+			t.Fatalf("claim retry was not idempotent: %v %v", retried, err)
+		}
 	})
 
 	t.Run("refund", func(t *testing.T) {
@@ -116,6 +122,39 @@ func TestAtomicSwapWalletClaimAndRefund(t *testing.T) {
 			t.Fatal("mempool refund failed consensus: ", err)
 		}
 	})
+}
+
+func TestAtomicSwapWatchAfterFunding(t *testing.T) {
+	s := newTestService(t)
+	if _, err := s.Create(context.Background(), "swap-late-watch-password", seedwallet.QdaySeedPhrase([32]byte{0x51, 0x44, 0x41, 0x59})); err != nil {
+		t.Fatal(err)
+	}
+	synced(t, s)
+	s.Manifest.Network.Qday.V1Height = 1
+	other, err := types.QdayKeysFromSeed([32]byte{7, 7, 7})
+	if err != nil {
+		t.Fatal(err)
+	}
+	contract := testSwapContract(t, other.Public, s.keys.Public, [32]byte{9, 9}, 100)
+	derived, err := s.DeriveAtomicSwap(contract)
+	if err != nil {
+		t.Fatal(err)
+	}
+	address, err := types.ParseQdayAddress(derived.Address)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Transfer(context.Background(), address, types.Siacoins(3), false); err != nil {
+		t.Fatal(err)
+	}
+	mineForTest(t, s)
+	view, err := s.WatchAtomicSwap(contract)
+	if err != nil || len(view.Outputs) != 1 || view.Outputs[0].ValueAtomic != types.Siacoins(3).ExactString() {
+		t.Fatalf("late watch did not discover funded output: %+v, %v", view, err)
+	}
+	if again, err := s.WatchAtomicSwap(contract); err != nil || len(again.Outputs) != 1 {
+		t.Fatalf("repeated watch was not idempotent: %+v, %v", again, err)
+	}
 }
 
 func TestAtomicSwapHTTPDerivation(t *testing.T) {

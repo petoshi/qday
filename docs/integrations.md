@@ -3,11 +3,11 @@
 This guide is for mining pools, exchanges, custodians and block explorers that
 already support Sia. QDAY keeps Sia's unspent-output model and much of its
 synchronization code, but its network identity, addresses, signatures,
-transactions and post-QDAY value rules are different.
+transactions and post-PQ-Day value rules are different.
 
-A valid solution to the fixed Edwards25519 challenge triggers the QDAY event.
+A valid solution to the fixed Edwards25519 challenge triggers the PQ Day event.
 If miners include the proof in block `h`, the new rules start at block `h + 6`.
-This guide calls `h + 6` the **QDAY block**.
+This guide calls `h + 6` the **PQ Day block**.
 
 ## Compatibility summary
 
@@ -21,12 +21,13 @@ This guide calls `h + 6` the **QDAY block**.
 | Sia wallet keys | No | Derive both QDAY keys and sign every input with both |
 | Sia contracts and siafunds | No | QDAY consensus rejects them |
 | Sia `getblocktemplate` client | Partly | Use QDAY's authenticated local endpoints and v2 templates |
-| Sia Stratum miner | Yes, through a bridge | Run [`qday-stratum`](https://github.com/petoshi/qday-stratum) beside an unlocked QDAY node |
+| SiaMining GPU or ASIC | Yes from the v1.0.0 activation block | Use the standard 4-byte server and 4-byte miner extranonces through [`qday-stratum`](https://github.com/petoshi/qday-stratum) or [`qday-pool`](https://github.com/petoshi/qday-pool) |
 | Public PPLNS pool | Yes | [`qday-pool`](https://github.com/petoshi/qday-pool) provides SiaMining Stratum, VarDiff, exact work accounting and automatic payouts |
-| Sia explorer assumptions | No | Track the QDAY block, changing values, shields and decay |
+| Sia explorer assumptions | No | Track the PQ Day block, changing values, shields and decay |
 | Sia JSON APIs | No | The shipped API is local and controls one wallet |
 | Exchange custody daemon | No | Run [`qday-walletd`](https://github.com/petoshi/qday-walletd) or implement the same QDAY key and accounting rules |
 | Supply RPC | No | Read QDAY issuance and burns from `GET /api/supply` |
+| Atomic-swap DEX | Partly | Use QDAY's SHA-256 hashlock and height-refund API; do not reuse Sia file contracts |
 
 An unmodified Sia node, wallet, pool controller or indexer cannot join or
 validate QDAY mainnet. Integrations should build with QDAY's copies of `core`,
@@ -66,12 +67,25 @@ transactions, their fees, the payout and the commitment. Exact
 avoid floating point. Repeating the request with its `longpollid` returns when
 the chain or mempool changes, or after 30 seconds.
 
-QDAY v0.8.1 adds an optional `worknonce`. Send
+QDAY v1.0.0 accepts an optional `worknonce`. Send
 `{"worknonce":<unique uint64>}` without `longpollid` to build an uncached
 candidate with a distinct marker and commitment for one miner. The
 `stratum.block` and `stratum.merklebranch` fields let a controller produce a
 SiaMining-compatible job without rebuilding QDAY state. A pool must distribute
 fresh work when the long-poll request returns.
+
+At block `9,100`, the node adds a 33-byte final mining-work
+transaction. The template exposes it as 23-byte `coinbase1`, four-byte
+`extranonce1`, four-byte `extranonce2` and two-byte `coinbase2`. This is the
+layout expected by standard SiaMining firmware, including the stock Obelisk SC1
+implementation. The worker folds the supplied left-side Merkle roots into this
+rightmost transaction and hashes the normal 80-byte header. The first QDAY
+payout marker and all mempool transactions remain in the complete block.
+
+Before the activation block, the template reports both extranonce sizes as
+zero. A bridge must disconnect workers when the sizes change so each miner
+subscribes again and receives the new four-byte server extranonce. Updated
+`qday-stratum` and `qday-pool` do this automatically.
 
 After finding a valid nonce, reconstruct the complete v2 block and submit its
 Sia binary encoding as hexadecimal:
@@ -92,7 +106,7 @@ these endpoints to the SiaMining dialect. Pool controllers may use the same API
 and implement their own share difficulty, worker accounting and payouts.
 
 The reference public pool is
-[`qday-pool`](https://github.com/petoshi/qday-pool). It requires QDAY v0.8.1 or
+[`qday-pool`](https://github.com/petoshi/qday-pool). It requires QDAY v1.0.0 or
 newer and uses `POST /api/miner/blockstatus` to follow found blocks through
 reorganizations and maturity. Its payout controller calls
 `POST /api/pool/payout` with canonical atomic integers and a persistent request
@@ -112,10 +126,12 @@ steps. A Sia coinbase transaction is not valid on QDAY:
    for the payout rule.
 4. Revalidate selected transactions in order and add their fees to the miner
    payout.
-5. Compute the state/transaction commitment for the payout address and
+5. At or after `9,100`, append one empty QDAY mining-work marker as
+   the final transaction.
+6. Compute the state/transaction commitment for the payout address and
    selected transaction list.
-6. Distribute the 80-byte header and target to workers.
-7. Insert the returned nonce, reconstruct the complete block and submit it to a
+7. Distribute the 80-byte header and target to workers.
+8. Insert the returned nonce, reconstruct the complete block and submit it to a
    QDAY chain manager.
 
 The reference candidate builder is `coreutils/qday.Candidate`; the reference
@@ -127,16 +143,55 @@ builder](../coreutils/qday/miner.go). The [end-to-end template
 test](../node/qday/mining_test.go) decodes a response, searches the header and
 submits the complete block.
 
-Starting with the QDAY block, every transfer in a candidate must contain valid
+Starting with the PQ Day block, every transfer in a candidate must contain valid
 20-bit DEFEND work, and each input contributes its value after any decay. Use
 the QDAY chain manager to validate selected transactions; a Sia mempool cannot
 perform these checks.
 
 Pool accounting must read the current display unit from chain state. The atomic
 block reward stays fixed, but its displayed amount changes from 8 QDAY to
-8,000,000 QDAY at the QDAY block. Miner rewards become spendable after 60
+8,000,000 QDAY at the PQ Day block. Miner rewards become spendable after 60
 blocks. A pool chooses its own additional confirmation threshold for chain
 reorganizations.
+
+## Atomic-swap DEX integration
+
+The v1.0.0 activation enables a native SHA-256 hashlock with an absolute QDAY
+height refund. It is a settlement primitive for an atomic-swap DEX; it does not
+make QDAY an EVM token and does not register it on an order book by itself.
+
+Each party exchanges a descriptor containing its 32-byte Ed25519 public key and
+32-byte SLH-DSA public key. The contract also contains the SHA-256 secret hash
+and refund height. Both parties call `POST /api/swap/derive` and compare the
+resulting QDAY address before funding. The participant who may spend calls
+`POST /api/swap/watch` so the complete policy remains available after restart.
+
+A normal swap follows this sequence:
+
+1. Generate a random 32-byte secret and exchange only its SHA-256 hash.
+2. Agree on recipient keys, refund keys, QDAY refund height, amounts and the
+   confirmation policy for both chains.
+3. Independently derive the same QDAY contract address.
+4. Fund that address with an ordinary QDAY transfer and wait for the agreed
+   confirmations.
+5. Claim through `POST /api/swap/claim`. The input witness reveals the secret
+   on the QDAY chain and requires both recipient signatures.
+6. If no valid claim occurs, the refund owner calls `POST /api/swap/refund`
+   after the selected QDAY tip reaches the agreed height.
+
+Refund times on the two chains must be staggered so the party reacting to a
+revealed secret has enough time to claim. Convert wall-clock requirements to
+QDAY heights conservatively; the 60-second block interval is a target, not a
+clock guarantee. Handle reorganizations before treating a secret or deposit as
+final.
+
+The API uses canonical atomic integers and persists locally submitted claims
+and refunds for rebroadcast. A claim retry returns the same transaction ID.
+DEX software may also construct and sign these transactions directly with
+`types.QdayAtomicSwap`, `coreutils/qday.SignAtomicSwapClaim` and
+`coreutils/qday.SignAtomicSwapRefund`. The consensus implementation is
+[`core/types/qday_swap.go`](../core/types/qday_swap.go); the wallet operations
+are [`node/qday/swap.go`](../node/qday/swap.go).
 
 ## Exchanges and custodians
 
@@ -182,8 +237,8 @@ updates](../coreutils/chain/manager.go).
 
 ### Amounts
 
-Store balances as atomic integers. Before the QDAY block, one displayed QDAY is
-`10^24` atomic units. Starting with the QDAY block, one displayed QDAY is
+Store balances as atomic integers. Before the PQ Day block, one displayed QDAY is
+`10^24` atomic units. Starting with the PQ Day block, one displayed QDAY is
 `10^18` atomic units. Stored atomic balances do not change; the wallet therefore
 displays the same balance as 1,000,000 times as many QDAY.
 
@@ -191,7 +246,7 @@ Read `unit` and `qdayHeight` from the current chain state before constructing,
 reviewing and submitting a withdrawal. The bundled API rejects a request whose
 `unit` no longer matches the chain. An exchange should enforce the same check.
 
-Starting with the QDAY block, every output receives a 1,440-block shield and
+Starting with the PQ Day block, every output receives a 1,440-block shield and
 then loses spendable value over 10,080 blocks unless its owner renews it. An
 indexer must calculate `State.QdayValue` at the spend height. The value stored
 in an output is therefore insufficient for solvency or withdrawal accounting.
@@ -223,7 +278,7 @@ an explorer. The response gives:
 - `maximumIssuedSupply`: premine plus every scheduled mining reward.
 
 Each value contains `qday` for display and `atomic` for exact accounting. The
-display denomination changes at the QDAY block, so integrations should persist
+display denomination changes at the PQ Day block, so integrations should persist
 the atomic integer, record `height`, and require `synced: true` before
 publishing the value. Current supply includes immature miner payouts.
 
@@ -259,7 +314,7 @@ The desktop wallet API controls one address and is not a custody backend. Use
 deposit addresses, exact atomic balances, an indexed deposit feed and
 idempotent withdrawals. It signs every input with both QDAY keys, persists
 pending transactions, updates their accumulator proofs, rebroadcasts them after
-restarts or reorganizations and runs automatic DEFEND after the QDAY block.
+restarts or reorganizations and runs automatic DEFEND after the PQ Day block.
 Its [API](https://github.com/petoshi/qday-walletd/blob/main/docs/API.md) and
 [operations guide](https://github.com/petoshi/qday-walletd/blob/main/docs/operations.md)
 define the integration and backup rules.
@@ -274,7 +329,7 @@ An explorer should index:
 - transaction IDs, inputs, outputs, fees and QDAY header kind;
 - stored output value and spendable value at the queried height;
 - output maturity height, shield start, shield deadline and decay progress;
-- pending and confirmed challenge proof, scheduled QDAY block and active
+- pending and confirmed challenge proof, scheduled PQ Day block and active
   denomination;
 - issued, burned and current supply from the node's `/api/supply` response.
 

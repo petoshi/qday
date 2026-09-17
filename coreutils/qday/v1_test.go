@@ -89,6 +89,44 @@ func TestQdayV1MiningMarkerActivation(t *testing.T) {
 	}
 }
 
+func TestMainnetV1ActivationBoundary(t *testing.T) {
+	_, cs, owner, premine := qdayV1Genesis(t, chain.QdayV1ActivationHeight)
+	recipient, err := types.QdayKeysFromSeed([32]byte{0x91})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fee := types.HastingsPerSiacoin.Div64(1000)
+	pending := types.V2Transaction{
+		SiacoinInputs:  []types.V2SiacoinInput{{Parent: premine}},
+		SiacoinOutputs: []types.SiacoinOutput{{Value: premine.SiacoinOutput.Value.Sub(fee), Address: recipient.Public.Policy().Address()}},
+		MinerFee:       fee,
+		ArbitraryData:  (consensus.QdayEnvelope{Kind: consensus.QdayTransfer}).Encode(),
+	}
+	if err := qday.SignTransfer(context.Background(), cs, &pending, &owner); err != nil {
+		t.Fatal(err)
+	}
+	wantID := pending.ID()
+
+	cs.Index.Height = chain.QdayV1ActivationHeight - 2
+	legacy := mineV1Block(t, cs, owner.Public)
+	if legacy.V2.Height != chain.QdayV1ActivationHeight-1 || len(legacy.V2.Transactions) != 1 {
+		t.Fatalf("block %d did not use the legacy layout", legacy.V2.Height)
+	} else if err := consensus.ValidateBlock(cs, legacy, consensus.V1BlockSupplement{}); err != nil {
+		t.Fatal("last legacy block failed consensus: ", err)
+	}
+
+	cs.Index.Height = chain.QdayV1ActivationHeight - 1
+	cs.Index.ID = legacy.ID()
+	upgraded := mineV1Block(t, cs, owner.Public, pending)
+	if upgraded.V2.Height != chain.QdayV1ActivationHeight || len(upgraded.V2.Transactions) != 3 {
+		t.Fatalf("block %d has %d transactions, expected payout, pending transfer and work marker", upgraded.V2.Height, len(upgraded.V2.Transactions))
+	} else if upgraded.V2.Transactions[1].ID() != wantID {
+		t.Fatal("activation changed the pending transaction ID")
+	} else if err := consensus.ValidateBlock(cs, upgraded, consensus.V1BlockSupplement{}); err != nil {
+		t.Fatal("activation block failed consensus: ", err)
+	}
+}
+
 func mineHeader(t *testing.T, cs consensus.State, b types.Block) types.Block {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -199,5 +237,18 @@ func TestQdayAtomicSwapPolicies(t *testing.T) {
 	refund.SiacoinInputs[0].SatisfiedPolicy = refundWitness
 	if err := consensus.ValidateV2Transaction(consensus.NewMidState(cs), refund); err != nil {
 		t.Fatal("valid atomic-swap refund rejected at timeout: ", err)
+	}
+
+	cs.QdayHeight = 1
+	cs.Network.Qday.DefendBits = 8
+	protectedClaim := spend(recipient.Public)
+	if err := qday.SignAtomicSwapClaim(context.Background(), cs, &protectedClaim, swap, &recipient, secret); err != nil {
+		t.Fatal(err)
+	}
+	envelope, err := consensus.ParseQdayEnvelope(protectedClaim.ArbitraryData)
+	if err != nil || !consensus.QdayWorkValid(cs.QdayWorkIntent(protectedClaim), envelope.Nonce, cs.Network.Qday.DefendBits) {
+		t.Fatal("atomic-swap claim is missing DEFEND work")
+	} else if err := consensus.ValidateV2Transaction(consensus.NewMidState(cs), protectedClaim); err != nil {
+		t.Fatal("post-PQ-Day atomic-swap claim rejected: ", err)
 	}
 }

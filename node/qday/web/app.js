@@ -313,14 +313,14 @@ function render(s) {
   $("mode").classList.toggle("running", s.mode !== "STOP");
   $("miningDot").hidden = s.mode === "STOP";
   $("multiplier").hidden = !s.qday;
-  $("shield").textContent = !s.qday ? "BEFORE QDAY" : !s.balanceReady ? "UPDATING…" : !s.shieldUntil ? "NO COINS" : s.shieldUntil <= s.height ? "DECAYING" : (s.shieldUntil - s.height) + " BLOCKS";
+  $("shield").textContent = !s.qday ? "BEFORE PQ DAY" : !s.balanceReady ? "UPDATING…" : !s.shieldUntil ? "NO COINS" : s.shieldUntil <= s.height ? "DECAYING" : (s.shieldUntil - s.height) + " BLOCKS";
   document.body.classList.toggle("qday", s.qday);
   $("era").textContent = s.qday ? "THE AFTERPARTY IS LIVE" : s.qdayHeight ? "QDAY AT BLOCK " + s.qdayHeight : "WAITING FOR THE END";
   $("headline").textContent = s.qday ? "THE KEYS DIED.\nTHE PARTY DIDN’T." : "MINE TODAY.\nWITNESS TOMORROW.";
   $("story").textContent = s.qday ? "Your reserve key still works.\nYour CPU is now life support." : "PQ day is inevitable.\nYou're celebrating it with us.";
   $("canaryHeadline").textContent = s.qday ? "The rules changed.\nStay alive." : s.qdayHeight ? "The proof is in.\nGet ready." : "The keys are\nstill breathing.";
   $("canaryNote").textContent = s.qday ? "A verified solution activated QDAY. Keep DEFEND running to renew your shields before coins decay." : "The network is waiting for a verified break of its classical cryptographic challenge.";
-  $("survivalEra").textContent = s.qday ? "QDAY ACTIVATED AT BLOCK " + s.qdayHeight : s.qdayHeight ? "ACTIVATION AT BLOCK " + s.qdayHeight : "BEFORE QDAY";
+  $("survivalEra").textContent = s.qday ? "PQ DAY ACTIVATED AT BLOCK " + s.qdayHeight : s.qdayHeight ? "ACTIVATION AT BLOCK " + s.qdayHeight : "BEFORE PQ DAY";
   $("survivalTitle").textContent = s.qday ? "Your afterlife is your responsibility." : "Mine while the keys still work.";
   $("survivalNote").textContent = s.qday ? "The challenge has been solved. Your reserve key protects spending; DEFEND renews your shields. Only a confirmed renewal prevents decay." : "QDAY starts when the network verifies a solution to its fixed Edwards25519 challenge. No news feed, admin switch or calendar date.";
   $("activityNote").textContent = s.qday ? "DEFEND renews shields and mines blocks. Stay online and unlocked. Renewals pay a fee. STOP lets shields expire; burned coins never return." : "Mining uses your CPU and electricity. Rewards require finding a block and waiting for maturity.";

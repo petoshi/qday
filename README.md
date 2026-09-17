@@ -38,14 +38,14 @@ the solution enters the mempool and miners confirm it
       ↓
 six-block countdown
       ↓
-QDAY: balances display ×1,000,000 and every coin enters defend-or-decay mode
+PQ DAY: balances display ×1,000,000 and every coin enters defend-or-decay mode
 ```
 
 Stupid on purpose. Deterministic in consensus. No committee required.
 
 ---
 
-## 🪦 Before QDAY
+## 🪦 Before PQ Day
 
 - **Blocks target 60 seconds.** Difficulty adjusts after every block.
 - **Mining is BLAKE2b-256.** The wallet includes a native CPU miner.
@@ -63,7 +63,7 @@ future is somebody else's problem.
 
 ---
 
-## 💥 What Actually Triggers QDAY
+## 💥 What Actually Triggers PQ Day
 
 The public challenge is a point `C`. The winning solution is a nonzero scalar
 `x` satisfying:
@@ -77,7 +77,7 @@ locally. Publishing it builds a signed transaction, pays a 1 QDAY fee, places
 the proof in the ordinary mempool and broadcasts it to peers. Miners include it
 like any other transaction.
 
-If the proof lands in block `h`, the network schedules QDAY for block `h + 6`.
+If the proof lands in block `h`, the network schedules PQ Day for block `h + 6`.
 A chain reorganization that removes the proof also removes the countdown. The
 selected chain decides. Math decides. That's the whole fucking oracle.
 
@@ -103,9 +103,9 @@ complete algorithm, transcript and test vectors are in
 
 ---
 
-## 🥂 After QDAY
+## 🥂 After PQ Day
 
-At the QDAY block, one displayed QDAY changes from `10^24` atomic units to
+At the PQ Day block, one displayed QDAY changes from `10^24` atomic units to
 `10^18`. Every unchanged atomic balance is displayed as **1,000,000 times as
 many QDAY**.
 
@@ -123,7 +123,7 @@ Now ownership becomes a recurring job:
 4. **DEFEND** — Spending creates new outputs with new shields. Sending the
    surviving value back to yourself is a renewal.
 
-Every post-QDAY spend also needs transaction-bound BLAKE2b work with 20 leading
+Every post-PQ-Day spend also needs transaction-bound BLAKE2b work with 20 leading
 zero bits: about 1,048,576 hashes on average. The work is tied to the exact
 transaction and network, so it cannot be farmed once and pasted everywhere.
 
@@ -175,6 +175,28 @@ before any later burns or decay. After PQ Day that amount displays as
 
 ---
 
+## ⚡ The v1.0.0 Protocol Upgrade
+
+At block `9,100`, QDAY changes one piece of block construction so
+standard SiaMining hardware can finally do the job it thought it was already
+doing.
+
+The node appends a compact 33-byte work transaction. Stock Sia Stratum gets its
+normal four-byte pool extranonce and four-byte miner extranonce. The payout
+marker stays first. Real mempool transactions stay in the middle. Fees still go
+to whoever mines the block instead of decorating somebody else's mempool.
+
+The same block enables native atomic swaps: SHA-256 hashlock, height refund and
+both QDAY signatures on either exit. That gives DEX software a real settlement
+primitive without pretending QDAY is an ERC-20 wearing a skull.
+
+This is a scheduled consensus change. Every node, wallet, seed, miner, pool,
+explorer and service must run v1.0.0 before the activation block. Genesis,
+addresses, balances and ordinary signed transactions stay exactly where they
+are. Pending transactions cross the boundary with the same IDs.
+
+---
+
 ## 🚀 Quick Start for the Impatient
 
 Download the archive for your Linux, Windows or macOS machine and its `.sha256` file from this
@@ -184,9 +206,9 @@ wallet. The executable needs the bundled `resources` directory beside it.
 ### Linux
 
 ```bash
-sha256sum -c QDAY-Wallet-0.8.1-mainnet-linux-amd64.tar.gz.sha256
-tar -xzf QDAY-Wallet-0.8.1-mainnet-linux-amd64.tar.gz
-cd QDAY-Wallet-0.8.1-mainnet-linux-amd64
+sha256sum -c QDAY-Wallet-1.0.0-mainnet-linux-amd64.tar.gz.sha256
+tar -xzf QDAY-Wallet-1.0.0-mainnet-linux-amd64.tar.gz
+cd QDAY-Wallet-1.0.0-mainnet-linux-amd64
 ./QDAY-Wallet
 ```
 
@@ -196,7 +218,7 @@ Verify the ZIP in PowerShell and compare the result with the downloaded
 `.sha256` file:
 
 ```powershell
-Get-FileHash .\QDAY-Wallet-0.8.1-mainnet-windows-amd64.zip -Algorithm SHA256
+Get-FileHash .\QDAY-Wallet-1.0.0-mainnet-windows-amd64.zip -Algorithm SHA256
 ```
 
 Extract the ZIP, then open `QDAY-Wallet.exe`. The Windows executable is
@@ -209,9 +231,9 @@ turn a wallet into somebody else's wallet.
 Use `macos-arm64` on Apple Silicon and `macos-amd64` on Intel:
 
 ```bash
-shasum -a 256 -c QDAY-Wallet-0.8.1-mainnet-macos-arm64.tar.gz.sha256
-tar -xzf QDAY-Wallet-0.8.1-mainnet-macos-arm64.tar.gz
-cd QDAY-Wallet-0.8.1-mainnet-macos-arm64
+shasum -a 256 -c QDAY-Wallet-1.0.0-mainnet-macos-arm64.tar.gz.sha256
+tar -xzf QDAY-Wallet-1.0.0-mainnet-macos-arm64.tar.gz
+cd QDAY-Wallet-1.0.0-mainnet-macos-arm64
 ./QDAY-Wallet
 ```
 
@@ -243,8 +265,8 @@ platform. It contains the same node binary bundled with the graphical wallet,
 the fixed mainnet manifest, deployment files and public protocol docs.
 
 ```bash
-tar -xzf QDAY-Node-0.8.1-mainnet-linux-amd64.tar.gz
-cd QDAY-Node-0.8.1-mainnet-linux-amd64
+tar -xzf QDAY-Node-1.0.0-mainnet-linux-amd64.tar.gz
+cd QDAY-Node-1.0.0-mainnet-linux-amd64
 ./qday --network ./qday-mainnet.json
 ```
 
@@ -316,9 +338,10 @@ online while the keys are locked.
 | Premine | `500,000 × 10^24` atomic units |
 | Maximum created supply | 8,500,000 QDAY in the original denomination |
 | Mining reward maturity | 60 blocks |
-| Default wallet fee | 0.001 QDAY before QDAY; 1,000 QDAY after QDAY |
-| Challenge-proof fee | 1 QDAY before QDAY |
-| QDAY countdown | 6 blocks after proof inclusion |
+| v1.0.0 activation | block `9,100` |
+| Default wallet fee | 0.001 QDAY before PQ Day; 1,000 QDAY after PQ Day |
+| Challenge-proof fee | 1 QDAY before PQ Day |
+| PQ Day countdown | 6 blocks after proof inclusion |
 | Shield / decay | 1,440 blocks / 10,080 blocks |
 | DEFEND work | 20 leading zero bits per spend |
 | Standalone P2P | TCP `19771` |
@@ -354,6 +377,10 @@ its own genesis and network marker. The pieces worth knowing:
   difficulty adjustment and work-based chain selection.
 - **Transactions:** coin transfers only, up to 128 inputs and 128 outputs.
 - **Authorization:** every input requires Ed25519 and SLH-DSA-SHA2-128s.
+- **SiaMining:** the compact final work marker uses the standard 4+4-byte
+  extranonce layout after the scheduled v1.0.0 activation.
+- **Atomic swaps:** SHA-256 hashlocks and absolute-height refunds, with both
+  signatures required for claims and refunds.
 - **Isolation:** QDAY peers verify both the QDAY network marker and mainnet
   genesis ID during the handshake.
 - **Discovery:** wallets use DNS bootstrap nodes, learn ordinary peers, release
@@ -368,7 +395,7 @@ The exact rules are short enough to read:
 
 - [`docs/parameters.md`](docs/parameters.md) — every fixed mainnet number.
 - [`docs/canary.md`](docs/canary.md) — reproducible NUMS derivation and verifier.
-- [`docs/consensus.md`](docs/consensus.md) — blocks, signatures, proof, QDAY,
+- [`docs/consensus.md`](docs/consensus.md) — blocks, signatures, proof, PQ Day,
   denomination, shields, decay and DEFEND.
 - [`docs/protocol.md`](docs/protocol.md) — P2P, addresses, seed phrase, key file
   and binary transaction header.
@@ -424,7 +451,7 @@ archive. They never contain a wallet key, seed phrase or API token.
 - A valid challenge proof is permanent once it survives chain
   reorganizations. The denomination and survival rules then come from every
   node, not from an announcement.
-- After QDAY, an unattended output eventually decays to zero. That is the
+- After PQ Day, an unattended output eventually decays to zero. That is the
   mechanism, not a support ticket.
 
 ---

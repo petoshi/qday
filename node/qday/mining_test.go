@@ -341,6 +341,58 @@ func TestV1MiningTemplateUsesCompactSiaWork(t *testing.T) {
 	if err := consensus.ValidateBlock(s.CM.TipState(), block, consensus.V1BlockSupplement{}); err != nil {
 		t.Fatal("reconstructed Sia Stratum block failed consensus: ", err)
 	}
+
+	recipient, err := types.QdayKeysFromSeed([32]byte{0x33})
+	if err != nil {
+		t.Fatal(err)
+	}
+	transactionID, err := s.Transfer(context.Background(), recipient.Public.Address(), types.Siacoins(1), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workNonce++
+	withMempool, err := s.MiningTemplateForWork(context.Background(), "", &workNonce)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if withMempool.MempoolTransactions != 1 || len(withMempool.Transactions) != 3 {
+		t.Fatalf("template counts %d mempool transactions across %d entries", withMempool.MempoolTransactions, len(withMempool.Transactions))
+	} else if withMempool.Transactions[1].TxID != transactionID.String() {
+		t.Fatalf("template omitted pending transaction %v", transactionID)
+	}
+	coinbase1, err = hex.DecodeString(withMempool.Stratum.Coinbase1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	coinbase2, err = hex.DecodeString(withMempool.Stratum.Coinbase2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encodedWork = append(append(append([]byte{}, coinbase1...), extraNonce1...), extraNonce2...)
+	encodedWork = append(encodedWork, coinbase2...)
+	decoder = types.NewBufDecoder(encodedWork)
+	work = types.V2Transaction{}
+	work.DecodeFrom(decoder)
+	if decoder.Err() != nil {
+		t.Fatal(decoder.Err())
+	}
+	root = work.MerkleLeafHash()
+	for _, encoded := range withMempool.Stratum.MerkleBranch {
+		branch, err := hex.DecodeString(encoded)
+		if err != nil || len(branch) != 32 {
+			t.Fatalf("invalid Merkle branch %q", encoded)
+		}
+		var left types.Hash256
+		copy(left[:], branch)
+		root = blake2b.SumPair(left, root)
+	}
+	block = decodeTemplateBlock(t, withMempool)
+	block.V2.Transactions[len(block.V2.Transactions)-1] = work
+	block.V2.Commitment = root
+	block = mineHeaderForTemplate(t, s.CM.TipState(), block)
+	if err := consensus.ValidateBlock(s.CM.TipState(), block, consensus.V1BlockSupplement{}); err != nil {
+		t.Fatal("transaction-aware Sia Stratum block failed consensus: ", err)
+	}
 }
 
 func mineHeaderForTemplate(t *testing.T, cs consensus.State, block types.Block) types.Block {

@@ -7,7 +7,7 @@ controller running on the same computer. It does not provide the block-history
 or multi-wallet operations required by exchanges and explorers.
 
 The API uses two related QDAY values. `qdayHeight` is zero until a valid
-challenge proof is confirmed; it then contains the scheduled QDAY block.
+challenge proof is confirmed; it then contains the scheduled PQ Day block.
 `qday` becomes true when the chain reaches that block. The event changes the
 displayed denomination and starts DEFEND, shields and decay.
 
@@ -84,7 +84,7 @@ full index has not reached an available chain state yet.
 The node caches the calculation for one chain index and recalculates it after
 the indexed tip changes. Source: [API response and issuance
 calculation](../node/qday/service.go), [full-UTXO supply
-calculation](../node/persist/sqlite/qday.go), and [post-QDAY value
+calculation](../node/persist/sqlite/qday.go), and [post-PQ-Day value
 formula](../core/consensus/qday.go).
 
 ## Status
@@ -105,8 +105,11 @@ Returns node, chain, wallet, mining and network state.
 | `scanHeight` | integer | latest block processed by the wallet index |
 | `networkSynced` | boolean | at least one synchronized peer is connected |
 | `synced` | boolean | peer requirement is met and wallet index has reached the latest block |
-| `qdayHeight` | integer | QDAY block; zero until a challenge proof confirms |
-| `qday` | boolean | chain has reached the QDAY block |
+| `qdayHeight` | integer | PQ Day block; zero until a challenge proof confirms |
+| `qday` | boolean | chain has reached the PQ Day block |
+| `protocolActivationHeight` | integer | fixed block where v1.0.0 consensus rules begin |
+| `protocolActive` | boolean | selected tip is at or beyond that block |
+| `blocksUntilProtocolActivation` | integer | remaining blocks; zero once active |
 | `unit` | string | atomic units per displayed QDAY |
 | `canary` | string | fixed Edwards25519 challenge point as 64 hex characters |
 | `hasWallet` | boolean | encrypted wallet exists |
@@ -128,7 +131,7 @@ Returns node, chain, wallet, mining and network state.
 | `fee` | string | default wallet transfer and burn fee in the active unit |
 | `proofFee` | string | minimum proof publication fee in the active unit |
 | `proofPending` | string | challenge-proof transaction ID in the local mempool, or empty |
-| `activationDelay` | integer | blocks from the proof block to the QDAY block |
+| `activationDelay` | integer | blocks from the proof block to the PQ Day block |
 | `blockReward` | string | reward for the next block in the active unit |
 | `blockIntervalSeconds` | number | target block interval |
 | `difficulty` | string | average hashes expected for the next block |
@@ -148,7 +151,7 @@ or that a locally accepted transaction was rejected. The wallet retries pending
 transactions without requiring another send request.
 
 `STOP` means the local worker is off. `MINE` means it is mining blocks before
-the QDAY event. `DEFEND` means it continues mining blocks after QDAY and also
+the PQ Day event. `DEFEND` means it continues mining blocks after PQ Day and also
 runs the automatic shield-renewal loop.
 
 The `p2p` object contains `listenAddress`, `bootstrapPeers`,
@@ -259,7 +262,7 @@ the address derived from the imported phrase:
 {"address":"qday1p..."}
 ```
 
-## Transfers and QDAY proof
+## Transfers and PQ Day proof
 
 ### `POST /api/send`
 
@@ -378,8 +381,135 @@ response contains its transaction ID.
 
 Builds a transaction that sends selected outputs back to the same wallet,
 performs DEFEND work, signs it and broadcasts it. Once confirmed, the new
-outputs receive new shields. The endpoint works only after the QDAY event and
+outputs receive new shields. The endpoint works only after the PQ Day event and
 returns an error when no output is within the final 360 blocks of its shield.
+
+## Atomic swaps
+
+These authenticated endpoints expose the hashlock and height-refund policy
+enabled at `protocolActivationHeight`. Public keys, hashes, output IDs, heights
+and atomic amounts are encoded without floating point.
+
+### `GET /api/swap/keys`
+
+Returns the active wallet's public descriptor. Unlock the wallet first.
+
+```json
+{
+  "classical":"<32-byte lowercase hex>",
+  "reserve":"<32-byte lowercase hex>",
+  "address":"qday1p..."
+}
+```
+
+The private Ed25519 and SLH-DSA keys never leave the wallet.
+
+### `POST /api/swap/derive`
+
+Verifies a complete portable contract and returns its deterministic QDAY
+address without writing wallet state:
+
+```json
+{
+  "recipient":{
+    "classical":"<32-byte lowercase hex>",
+    "reserve":"<32-byte lowercase hex>",
+    "address":"qday1p..."
+  },
+  "refund":{
+    "classical":"<32-byte lowercase hex>",
+    "reserve":"<32-byte lowercase hex>",
+    "address":"qday1p..."
+  },
+  "secretHash":"<SHA-256 digest as 32-byte lowercase hex>",
+  "refundHeight":12000
+}
+```
+
+The two optional `address` fields are checked against their public keys when
+present. A successful response is:
+
+```json
+{
+  "address":"qday1p...",
+  "height":8000,
+  "activationHeight":9000,
+  "active":false,
+  "outputs":null
+}
+```
+
+Both parties should derive the same address independently before funding it.
+
+### `POST /api/swap/watch`
+
+Accepts the same contract, registers its complete spending policy in the
+unlocked wallet and returns its status. Registration is persistent and
+idempotent. It may happen before or after funding.
+
+Fund the returned address with an ordinary `/api/send`. Wait for the deposit's
+required confirmations before releasing value on the other chain. A watched
+confirmed output appears as:
+
+```json
+{
+  "address":"qday1p...",
+  "height":9100,
+  "activationHeight":9000,
+  "active":true,
+  "outputs":[{
+    "id":"<64 hex characters>",
+    "valueAtomic":"1000000000000000000000000",
+    "spendableAtomic":"1000000000000000000000000",
+    "maturityHeight":0,
+    "confirmations":7
+  }]
+}
+```
+
+`spendableAtomic` applies the value rules at the next block and can be lower
+than `valueAtomic` after PQ Day.
+
+### `POST /api/swap/status`
+
+Accepts the same contract and returns its current unspent confirmed outputs.
+Outputs already spent by a local mempool transaction are omitted. A caller
+should still use `/api/swap/watch` once so the wallet retains the full policy
+needed to spend after a restart.
+
+### `POST /api/swap/claim`
+
+The recipient spends one confirmed contract output by revealing the secret:
+
+```json
+{
+  "contract":{ "recipient":{}, "refund":{}, "secretHash":"...", "refundHeight":12000 },
+  "output":"<64 hex character output ID>",
+  "feeAtomic":"1000000000000000000000",
+  "secret":"<32-byte lowercase hex preimage>"
+}
+```
+
+The active wallet must match the recipient descriptor. The node verifies the
+SHA-256 preimage, signs with both wallet keys, performs DEFEND work when needed,
+adds the transaction to the mempool and persists it for rebroadcast. Retrying
+the same spend returns the same transaction ID.
+
+### `POST /api/swap/refund`
+
+The refund owner spends the output after the timeout:
+
+```json
+{
+  "contract":{ "recipient":{}, "refund":{}, "secretHash":"...", "refundHeight":12000 },
+  "output":"<64 hex character output ID>",
+  "feeAtomic":"1000000000000000000000"
+}
+```
+
+The selected chain tip must be at least `refundHeight`, so the refund can enter
+the following block. Supplying a `secret` to this endpoint is rejected. Both
+claim and refund return `{"transaction":"<64 hex characters>"}`.
 
 ## Mining and node control
 
@@ -425,20 +555,31 @@ complete 80-byte BLAKE2b work header encoded as 160 hexadecimal characters:
   "blockRewardAtomic":"8000000000000000000000000",
   "feesAtomic":"1000000000000000000000",
   "payoutAtomic":"8001000000000000000000000",
+  "mempoolTransactions":12,
   "stratum":{
     "block":"<hex-encoded complete QDAY v2 block>",
+    "coinbase1":"<hex-encoded fixed prefix>",
+    "coinbase2":"<hex-encoded fixed suffix>",
+    "extranonce1Size":4,
+    "extranonce2Size":4,
     "merklebranch":["<64 hex characters>"]
   }
 }
 ```
 
-Transaction zero is the mandatory QDAY miner marker. The remaining entries are
-valid mempool transactions selected in dependency order. Their fees are added
-to `minerpayout`. Supplying the current `longpollid` holds the request until the
-tip or mempool changes, or until the 30-second template age expires.
+Transaction zero is the mandatory QDAY payout marker. Starting at
+`protocolActivationHeight`, the final entry is the compact mining-work marker;
+entries between them are valid mempool transactions selected in dependency
+order. `mempoolTransactions` counts only those user transactions. Their fees
+are added to `minerpayout`. Supplying the current `longpollid` holds the request
+until the tip or mempool changes, or until the 30-second template age expires.
 
 `stratum.block` is the complete Sia-encoded block represented by the template.
 A controller may replace its nonce and timestamp and send it to `submitblock`.
+After protocol activation, the rightmost transaction is reconstructed as
+`coinbase1 || extranonce1 || extranonce2 || coinbase2`; the two extranonces are
+exactly four bytes each. The complete result is 33 bytes. Before activation,
+both extranonce sizes are zero and the final transaction is fixed.
 `stratum.merklebranch` contains the left-side Merkle roots needed to use the
 last entry in `transactions` as Sia Stratum's rightmost arbitrary transaction.
 Start with `BLAKE2b-256(0x00 || transaction.data)`, then replace the root with
@@ -542,7 +683,7 @@ it does not create duplicate renewals for outputs already being spent.
 
 Starts native BLAKE2b mining. It requires an unlocked wallet, at least one
 synchronized peer, a thread count from 1 through `maxThreads`, and a local clock
-at or after the mainnet start time. After the QDAY event, the reported mode
+at or after the mainnet start time. After the PQ Day event, the reported mode
 changes to `DEFEND`; block mining continues while the wallet also renews outputs
 that are approaching their shield deadline.
 

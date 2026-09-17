@@ -53,7 +53,11 @@ func minePendingTestBlock(t *testing.T, s *Service, keys types.QdayKeys, txns ..
 	t.Helper()
 	cs := s.CM.TipState()
 	b := mining.Candidate(cs, keys, txns, cs.PrevTimestamps[0].Add(2*time.Second))
-	if len(b.V2.Transactions) != len(txns)+1 {
+	protocolTransactions := 1
+	if cs.QdayV1Active(cs.Index.Height + 1) {
+		protocolTransactions = 2
+	}
+	if len(b.V2.Transactions) != len(txns)+protocolTransactions {
 		t.Fatal("candidate omitted a test transaction")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -66,6 +70,35 @@ func minePendingTestBlock(t *testing.T, s *Service, keys types.QdayKeys, txns ..
 		t.Fatal(err)
 	}
 	return b
+}
+
+func TestPendingTransactionCrossesV1Activation(t *testing.T) {
+	s, keys, txn := pendingTestService(t)
+	s.Manifest.Network.Qday.V1Height = 2
+	basis := s.CM.Tip()
+	if _, err := s.CM.AddV2PoolTransactions(basis, []types.V2Transaction{txn}); err != nil {
+		t.Fatal(err)
+	}
+	id := txn.ID()
+
+	// Advance to the last pre-upgrade tip without mining the pending payment.
+	before := minePendingTestBlock(t, s, keys.Public)
+	if len(before.V2.Transactions) != 1 {
+		t.Fatalf("pre-activation block has %d transactions", len(before.V2.Transactions))
+	}
+	pool := s.CM.V2PoolTransactions()
+	if len(pool) != 1 || pool[0].ID() != id {
+		t.Fatal("pre-activation tip dropped or changed the pending transaction")
+	}
+
+	activation := minePendingTestBlock(t, s, keys.Public, pool...)
+	if len(activation.V2.Transactions) != 3 {
+		t.Fatalf("activation block has %d transactions, expected payout marker, payment and work marker", len(activation.V2.Transactions))
+	} else if activation.V2.Transactions[1].ID() != id {
+		t.Fatal("activation changed the pending transaction ID")
+	} else if len(s.CM.V2PoolTransactions()) != 0 {
+		t.Fatal("confirmed activation transaction remained in the mempool")
+	}
 }
 
 func TestPendingTransactionSurvivesLongOfflineGap(t *testing.T) {

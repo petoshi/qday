@@ -167,15 +167,43 @@ kind `3` challenge-proof transaction has the final field; it contains the
 are specified in
 [`consensus.md`](consensus.md).
 
+Kind `4` is the compact mining-work marker used at and after block
+`9,100`. It is always the last transaction in a block and has no
+keys or witness. Its nonce is split into two four-byte SiaMining extranonces.
+The marker is rejected from the mempool and creates no outputs.
+
+## Scheduled protocol upgrade
+
+The v1.0.0 rules begin at block `9,100`. Nodes running an older
+release follow the existing chain until that boundary, then reject the first
+block carrying the required work marker. Every mainnet node, miner, seed,
+explorer and service must update before the boundary.
+
+The activation schedule is local consensus configuration and is deliberately
+absent from the genesis manifest. This preserves the existing genesis ID,
+network domain and P2P identity. The schedule is exposed by `/api/status` as
+`protocolActivationHeight`, `protocolActive` and
+`blocksUntilProtocolActivation`.
+
+Ordinary signed transactions created before the boundary remain valid after
+it. Their IDs, inputs, outputs, amounts and signatures are unchanged. A node
+revalidates its mempool against the next block as usual; the only new block
+requirement is the final compact work marker.
+
+The same boundary enables the SHA-256 hashlock plus height-refund spending
+policy described in [`consensus.md`](consensus.md#atomic-swaps). Contracts use
+canonical Ed25519 and SLH-DSA public keys, a 32-byte secret hash and a uint64
+refund height. Claims reveal the secret; refunds reveal the timeout branch.
+
 ## Amount encoding
 
 Atomic units are the integers stored by consensus and never change. QDAY
 changes the number of atomic units represented by one displayed QDAY when the
-challenge proof triggers the QDAY event:
+challenge proof triggers the PQ Day event:
 
 ```text
-before the QDAY event: 1000000000000000000000000
-after the QDAY event:  1000000000000000000
+before the PQ Day event: 1000000000000000000000000
+after the PQ Day event:  1000000000000000000
 ```
 
 The wallet API sends a decimal QDAY amount together with the current `unit`

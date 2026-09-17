@@ -19,7 +19,7 @@ import zipfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 GO = str(ROOT / ".tools/go/bin/go") if (ROOT / ".tools/go/bin/go").exists() else "go"
-VERSION = "0.8.1"
+VERSION = "1.0.0"
 MAINNET_MANIFEST_SHA256 = "14d4a47a850f5ba9d81129142d8718c323d826b5f9459516374c4f0f92eaa65b"
 TARGETS = {
     "linux-amd64": ("linux", "amd64"),

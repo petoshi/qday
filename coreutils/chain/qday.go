@@ -15,10 +15,9 @@ import (
 	"go.sia.tech/core/types"
 )
 
-// QdayV1ActivationHeight is intentionally left unscheduled while v1.0.0 is
-// being tested. Set it to the user-selected mainnet height immediately before
-// the release is built; zero keeps the new consensus rules inactive.
-const QdayV1ActivationHeight uint64 = 0
+// QdayV1ActivationHeight is the mainnet height at which compact SiaMining work
+// and atomic-swap spends become consensus rules.
+const QdayV1ActivationHeight uint64 = 9100
 
 // QdayManifest is the complete launch artifact. Changing any parameter changes
 // the genesis ID, which the inherited P2P handshake enforces.

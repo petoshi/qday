@@ -7,10 +7,17 @@ existing outputs and creates new ones. Fixed mainnet values are listed in
 
 The chain has two periods. It begins with ordinary proof-of-work mining while a
 fixed Edwards25519 challenge remains unsolved. If a valid solution enters block
-`h`, the QDAY event is scheduled for block `h + 6`. Starting with that block,
+`h`, the PQ Day event is scheduled for block `h + 6`. Starting with that block,
 balances display with a 1,000,000× denomination change, every spend carries
 DEFEND proof of work, and unrenewed outputs can decay. Blocks and mining rewards
 continue under the same schedule.
+
+QDAY v1.0.0 also contains a scheduled protocol upgrade at block
+`9,100`. This height is independent of PQ Day. It changes the final
+mining marker so standard SiaMining hardware can build unique work, and it
+enables hash-and-time-locked outputs for atomic swaps. The genesis block,
+existing addresses, ordinary transactions, balances and transaction IDs do not
+change.
 
 ## Chain and proof of work
 
@@ -90,9 +97,21 @@ address. It has:
 
 The hash of this two-key spending rule must equal the miner payout address.
 The payout equals the block reward plus all transaction fees. Heights 1 through
-1,000,000 issue `8 × 10^24` atomic units. This displays as 8 QDAY before the
-QDAY event and 8,000,000 QDAY afterward. Later heights issue no new units and
+1,000,000 issue `8 × 10^24` atomic units. This displays as 8 QDAY before
+PQ Day and 8,000,000 QDAY afterward. Later heights issue no new units and
 may pay fees. A miner cannot spend a payout until 60 more blocks are added.
+
+Starting at block `9,100`, every block also ends with exactly one
+mining-work marker. It has QDAY header kind `4`, no keys, witness, inputs,
+outputs, fee or other fields. Its eight-byte nonce is mutable mining data. The
+first coinbase marker remains unchanged; ordinary mempool transactions appear
+between the two markers. A block without the final marker, with it in another
+position, or with any nonempty transaction field is invalid.
+
+The encoded work marker is exactly 33 bytes. SiaMining Stratum divides it as
+23 fixed bytes, four bytes assigned by the server, four bytes searched by the
+miner and two fixed trailing bytes. This only changes the block commitment and
+mining header. The marker creates and spends no value.
 
 ## Addresses and signatures
 
@@ -104,7 +123,7 @@ threshold 2 of:
   SLH-DSA-SHA2-128s public key
 ```
 
-Every spend reveals both public keys and supplies both signatures. The
+An ordinary spend reveals both public keys and supplies both signatures. The
 transaction signature hash is separated from every other network and purpose:
 
 ```text
@@ -124,6 +143,10 @@ QDAY accepts coin transfers only. Siafund inputs and outputs, file contracts,
 contract revisions and resolutions, attestations and foundation updates are
 invalid. A normal transfer requires at least one input and one output, with a
 maximum of 128 inputs and 128 outputs.
+
+Starting at block `9,100`, an input may instead reveal one branch
+of the atomic-swap policy defined below. Both possible branches still require
+an Ed25519 signature and an SLH-DSA signature.
 
 ## QDAY transaction header
 
@@ -146,7 +169,8 @@ Kinds are:
 | --- | --- | --- |
 | `1` | transfer | transfer and DEFEND renewal |
 | `2` | coinbase | first transaction in every non-genesis block |
-| `3` | challenge proof | one funded proof that starts the QDAY countdown |
+| `3` | challenge proof | one funded proof that starts the PQ Day countdown |
+| `4` | mining work | empty final marker in blocks from `9,100` |
 
 Transfer and proof headers contain no key descriptors. A coinbase header
 contains exactly one. A challenge proof uses nonce zero. Starting with the QDAY
@@ -155,7 +179,7 @@ block, the transfer nonce carries DEFEND work.
 ## Value conservation
 
 The sum of outputs plus the miner fee may not exceed the sum of inputs.
-Starting with the QDAY block, each input is evaluated at its decayed value.
+Starting with the PQ Day block, each input is evaluated at its decayed value.
 Any positive difference between evaluated inputs and outputs plus fee is
 permanently destroyed.
 
@@ -163,6 +187,37 @@ Transaction fees move existing units to the miner and do not increase supply.
 Consensus sets a minimum only for a challenge-proof transaction. The bundled
 wallet uses a fixed transfer and DEFEND fee of `10^21` atomic units. This is
 displayed as 0.001 QDAY before the event and 1,000 QDAY afterward.
+
+## Atomic swaps
+
+QDAY atomic swaps use a SHA-256 hashlock and an absolute block-height refund.
+A contract commits the recipient's two public keys, the refund owner's two
+public keys, a 32-byte SHA-256 secret hash and a nonzero refund height. Its
+output address is the hash of this policy:
+
+```text
+threshold 1 of:
+  threshold 3 of:
+    recipient Ed25519 signature
+    recipient SLH-DSA signature
+    SHA-256 preimage
+  threshold 3 of:
+    refund Ed25519 signature
+    refund SLH-DSA signature
+    chain tip height at least refundHeight
+```
+
+The spender reveals one branch and the opaque hash of the other. The parent
+output address commits both complete branches, so neither party can replace
+the hidden branch while spending. A claim exposes the 32-byte secret in the
+input witness. A refund becomes valid once the selected parent tip has reached
+`refundHeight`; the transaction can therefore enter the following block.
+
+Atomic-swap transactions use the ordinary transfer header, value-conservation
+rules, fees, maturity checks and replay protection. After PQ Day they also
+perform DEFEND work and spend the output's value after any decay. Consensus
+does not create an order book, price feed or bridge asset; exchange software
+coordinates the matching contract on the other chain.
 
 ## Intentional burns
 
@@ -183,7 +238,7 @@ builder](../node/qday/service.go), the [void-address
 definition](../core/types/types.go) and the [node supply
 calculation](../node/persist/sqlite/qday.go).
 
-## Challenge proof and the QDAY event
+## Challenge proof and the PQ Day event
 
 The fixed challenge is a point `C` in the prime-order Edwards25519 group:
 
@@ -208,14 +263,14 @@ canonical 32-byte little-endian encoding of `x`. A proof transaction must:
 
 The proof travels through the unconfirmed transaction pool (mempool) and the
 normal block-relay path. If miners include it in block `h`, consensus records
-`qdayHeight = h + 6`. That value is the QDAY block, where the denomination,
+`qdayHeight = h + 6`. That value is the PQ Day block, where the denomination,
 shield, decay and DEFEND rules begin. A chain reorganization that removes the
 proof also cancels the scheduled event.
 
 ## Denomination change
 
-Before the QDAY block, one displayed QDAY is `10^24` atomic units. Starting with
-the QDAY block, one displayed QDAY is `10^18` atomic units. Stored output values
+Before the PQ Day block, one displayed QDAY is `10^24` atomic units. Starting with
+the PQ Day block, one displayed QDAY is `10^18` atomic units. Stored output values
 do not change at that block. The same atomic balance is therefore displayed as
 1,000,000 times as many QDAY.
 
@@ -245,7 +300,7 @@ The spendable value is `floor(V × remaining / 10,080)`. It becomes zero at
 interval. Nodes calculate the loss when the output is spent; no recurring burn
 transaction changes the UTXO set.
 
-Every transfer starting with the QDAY block must also satisfy
+Every transfer starting with the PQ Day block must also satisfy
 transaction-bound BLAKE2b work:
 
 ```text

@@ -102,3 +102,27 @@ func TestStatusBalanceDuringIndexCatchup(t *testing.T) {
 		t.Fatalf("confirmed transfer did not update balance: %v, %v", status, err)
 	}
 }
+
+func TestStatusReportsProtocolActivation(t *testing.T) {
+	s := newTestService(t)
+	if _, err := s.Create(context.Background(), "protocol-status-password", seedwallet.QdaySeedPhrase([32]byte{0x51, 0x44, 0x41, 0x59})); err != nil {
+		t.Fatal(err)
+	}
+	synced(t, s)
+	s.Manifest.Network.Qday.V1Height = 1
+	status, err := s.Status()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status["protocolActivationHeight"] != uint64(1) || status["protocolActive"] != false || status["blocksUntilProtocolActivation"] != uint64(1) {
+		t.Fatalf("wrong pre-activation status: %+v", status)
+	}
+	mineForTest(t, s)
+	status, err = s.Status()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status["protocolActivationHeight"] != uint64(1) || status["protocolActive"] != true || status["blocksUntilProtocolActivation"] != uint64(0) {
+		t.Fatalf("wrong active protocol status: %+v", status)
+	}
+}

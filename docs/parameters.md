@@ -9,7 +9,7 @@ block heights.
 | Parameter | Value |
 | --- | --- |
 | Network name | `qday-mainnet` |
-| Software release | `0.8.1` |
+| Software release | `1.0.0` |
 | Mainnet start time (UTC) | `2026-09-11T06:59:00Z` |
 | Genesis ID | `d71aebcb687c2fca4d3a5819e6c632efa7d46731395970fce081f3dc57606a40` |
 | Manifest | `qday-mainnet.json` |
@@ -18,6 +18,22 @@ block heights.
 | P2P network marker | `514441590001a74e` |
 | P2P TCP port | `19771` |
 | Local wallet API TCP port | `19770` |
+
+## Scheduled v1.0.0 upgrade
+
+| Parameter | Value |
+| --- | --- |
+| Activation block | `9,100` |
+| Required release | `1.0.0` or newer |
+| SiaMining extranonce split | `4-byte server + 4-byte miner` |
+| Compact mining-work transaction | `33 bytes` |
+| Atomic-swap hash | `SHA-256` |
+| Atomic-swap timeout | absolute QDAY chain height |
+
+The activation changes block validation at the stated height. It does not
+change the genesis ID, address format, existing balances or ordinary signed
+transactions. Older nodes remain on the same chain before the boundary and
+fork away when they reject the first upgraded block.
 
 Genesis inscription:
 
@@ -86,21 +102,21 @@ event. Fees move existing units. Decay can permanently reduce spendable supply.
 | Seed phrase | 24 words, English BIP39 word list |
 | Seed entropy/checksum | 256-bit entropy + 8-bit checksum |
 | Wallet addresses per seed phrase | `1` |
-| Default wallet transfer fee | `0.001 QDAY` before QDAY; `1,000 QDAY` after QDAY |
+| Default wallet transfer fee | `0.001 QDAY` before PQ Day; `1,000 QDAY` after PQ Day |
 | Inputs accepted by consensus | at most `128` |
 | Outputs accepted by consensus | at most `128` |
 | Inputs selected by the bundled wallet | at most `128` per transfer |
 
-The default fee has the same atomic value on both sides of the QDAY event. Its displayed
+The default fee has the same atomic value on both sides of the PQ Day event. Its displayed
 amount changes because the denomination changes.
 Send, burn and proof publication also accept a custom total fee in the current
 QDAY denomination. The minimum proof publication fee remains a consensus rule.
 
-## The QDAY event
+## The PQ Day event
 
 Mainnet contains one fixed Edwards25519 challenge point. Its solution is the
 scalar `x` for which `x·G` equals that point. The first valid proof transaction
-starts the QDAY countdown. If miners include it in block `h`, QDAY begins at
+starts the PQ Day countdown. If miners include it in block `h`, QDAY begins at
 block `h + 6`.
 
 The point's public NUMS derivation, complete transcript and independent verifier
@@ -111,7 +127,7 @@ are documented in [`canary.md`](canary.md).
 | Challenge group | prime-order Edwards25519 subgroup |
 | Challenge point | `7343aaaab7bb999347740b9e1932f5487046f56b1566ab23cac0b129adefb771` |
 | Solution encoding | nonzero scalar, canonical 32-byte little-endian form |
-| Minimum proof fee | `1 QDAY` before the QDAY event |
+| Minimum proof fee | `1 QDAY` before the PQ Day event |
 | Proof countdown | `6 blocks` |
 | Denomination multiplier | `1,000,000` |
 | Shield duration | `1,440 blocks` |
@@ -119,12 +135,12 @@ are documented in [`canary.md`](canary.md).
 | Decay step | `60 blocks` |
 | DEFEND work | `20 leading zero bits` |
 
-At the QDAY block, one displayed QDAY changes from `10^24` to `10^18` atomic
+At the PQ Day block, one displayed QDAY changes from `10^24` to `10^18` atomic
 units, making every unchanged atomic balance display as 1,000,000 times as many
 QDAY. Every output is fully spendable for 1,440 blocks, about 24 hours at the
 target interval. It then loses spendable value over 10,080 blocks, about seven
 days. A transaction creates new outputs and starts new shields for them. Every
-spend after QDAY must also perform the fixed 20-bit DEFEND proof of work, which
+spend after PQ Day must also perform the fixed 20-bit DEFEND proof of work, which
 takes about 1,048,576 hashes on average.
 
 ## Bootstrap nodes

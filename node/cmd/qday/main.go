@@ -34,7 +34,7 @@ import (
 	"go.uber.org/zap"
 )
 
-var version = "0.8.1"
+var version = "1.0.0"
 
 func loadManifest(path string) (m chain.QdayManifest, err error) {
 	f, err := os.Open(path)
@@ -115,7 +115,7 @@ func genesis(args []string) error {
 	}
 	premine := m.Genesis.Transactions[0].SiacoinOutputs[0].Value
 	total := premine.Add(m.Network.Qday.Reward.Mul64(m.Network.Qday.MiningBlocks))
-	fmt.Printf("QDAY mainnet manifest: %s\nGenesis: %s\nPremine address: %s\nPremine: %s / %s QDAY before QDAY (fixed 500000-coin premine)\n", *out, m.Genesis.ID(), m.Premine, qday.FormatAmount(premine, types.HastingsPerSiacoin), qday.FormatAmount(total, types.HastingsPerSiacoin))
+	fmt.Printf("QDAY mainnet manifest: %s\nGenesis: %s\nPremine address: %s\nPremine: %s / %s QDAY before PQ Day (fixed 500000-coin premine)\n", *out, m.Genesis.ID(), m.Premine, qday.FormatAmount(premine, types.HastingsPerSiacoin), qday.FormatAmount(total, types.HastingsPerSiacoin))
 	if m.GenesisMessage != "" {
 		fmt.Printf("Genesis message: %s\n", m.GenesisMessage)
 	}
