@@ -1,13 +1,11 @@
-name: Feature Request
-description: Request a new feature be added to walletd.
+name: QDAY feature request
+description: Propose a change to the QDAY node or wallet
 labels: ["feature"]
 body:
   - type: markdown
     attributes:
       value: |
-        Thanks for taking the time to fill out this feature request!
-        Note: Please search to see if an issue already exists for the feature
-        you want added.
+        Search existing QDAY issues before opening another request.
   - type: textarea
     id: feature-description
     attributes:
@@ -22,8 +20,8 @@ body:
     id: version
     attributes:
       label: Version
-      description: What version of walletd are you running?
-      placeholder: v0.8.0
+      description: What QDAY version are you running?
+      placeholder: v1.0.0
     validations:
       required: false
   - type: input

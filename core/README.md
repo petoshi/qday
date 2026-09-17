@@ -1,44 +1,44 @@
-# [![Sia Core](https://sia.tech/assets/banners/sia-banner-core.png)](http://sia.tech)
+# QDAY core
 
-[![GoDoc](https://godoc.org/go.sia.tech/core?status.svg)](https://godoc.org/go.sia.tech/core)
-[![Go Reference](https://pkg.go.dev/badge/go.sia.tech/core.svg)](https://pkg.go.dev/go.sia.tech/core)
+This directory contains QDAY's consensus-critical types, validation rules,
+binary encoding, proof of work and peer protocol. It began as a fork of
+[Sia Core](https://github.com/SiaFoundation/core). The inherited
+`go.sia.tech/core` module path remains in place so the QDAY packages can stay
+close to the code they came from.
 
-`core` provides the foundational building blocks of the Sia network: the
-consensus rules, the peer-to-peer protocol, the renter-host protocol, and the
-core types and encoding they all share. It is the reference implementation of
-Sia's consensus-critical logic and is depended on by nodes, wallets, hosts, and
-tooling across the ecosystem.
+Do not replace this directory with the public Sia module when building QDAY.
+An ordinary Sia node has a different genesis, network handshake, address format
+and transaction rules and cannot validate QDAY mainnet.
 
-It deliberately does *not* include the higher-level components needed to run a
-node — a blockchain manager, transaction pool, wallet, or gossip server. Those
-build on top of `core` and live in
-[coreutils](https://github.com/SiaFoundation/coreutils).
+The QDAY-specific code includes:
 
-## Packages
+- dual Ed25519 and SLH-DSA spending policies;
+- the QDAY transaction envelope and mainnet replay domain;
+- the fixed Edwards25519 canary and PQ Day state transition;
+- denomination, shield, decay and DEFEND rules;
+- the block 9,100 mining marker and atomic-swap policies;
+- the QDAY network handshake and compact block relay.
 
-- **[types](https://pkg.go.dev/go.sia.tech/core/types)** — the essential types
-  of the Sia blockchain (currencies, addresses, transactions, blocks, file
-  contracts) and their binary/JSON encoding.
-- **[consensus](https://pkg.go.dev/go.sia.tech/core/consensus)** — the Sia
-  consensus algorithms: validating and applying blocks, tracking chain state,
-  and maintaining the accumulator of unspent elements.
-- **[gateway](https://pkg.go.dev/go.sia.tech/core/gateway)** — the peer-to-peer
-  protocol used by nodes to discover peers and exchange blocks and transactions.
-- **[rhp/v2](https://pkg.go.dev/go.sia.tech/core/rhp/v2),
-  [rhp/v3](https://pkg.go.dev/go.sia.tech/core/rhp/v3),
-  [rhp/v4](https://pkg.go.dev/go.sia.tech/core/rhp/v4)** — successive versions of
-  the renter-host protocol for negotiating and settling storage contracts.
-- **[blake2b](https://pkg.go.dev/go.sia.tech/core/blake2b)** — a BLAKE2b
-  implementation optimized for the Merkle-tree hashing used throughout Sia.
+The inherited `rhp` packages remain for source compatibility. QDAY mainnet is a
+coin chain and rejects Sia file contracts, siafunds and foundation updates.
 
-## Installation
+Read the public [consensus rules](../docs/consensus.md), [network
+protocol](../docs/protocol.md) and [mainnet parameters](../docs/parameters.md)
+before integrating these packages.
 
-```
-go get go.sia.tech/core@latest
+## Test
+
+From this directory:
+
+```sh
+go test ./...
 ```
 
-`core` requires Go 1.26 or later.
+From the repository root, `make test` runs this module together with the rest
+of QDAY.
 
-## License
+## License and origin
 
-`core` is licensed under the [MIT License](LICENSE).
+The code is available under the [MIT License](LICENSE). Its Sia ancestry and
+third-party notices remain in the source history and the repository's
+[`licenses`](../licenses) directory.

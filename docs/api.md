@@ -433,7 +433,7 @@ present. A successful response is:
 {
   "address":"qday1p...",
   "height":8000,
-  "activationHeight":9000,
+  "activationHeight":9100,
   "active":false,
   "outputs":null
 }
@@ -455,7 +455,7 @@ confirmed output appears as:
 {
   "address":"qday1p...",
   "height":9100,
-  "activationHeight":9000,
+  "activationHeight":9100,
   "active":true,
   "outputs":[{
     "id":"<64 hex characters>",

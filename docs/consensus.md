@@ -12,8 +12,8 @@ balances display with a 1,000,000× denomination change, every spend carries
 DEFEND proof of work, and unrenewed outputs can decay. Blocks and mining rewards
 continue under the same schedule.
 
-QDAY v1.0.0 also contains a scheduled protocol upgrade at block
-`9,100`. This height is independent of PQ Day. It changes the final
+QDAY v1.0.0 also contains a protocol upgrade at block `9,100`. This height is
+independent of PQ Day. It changes the final
 mining marker so standard SiaMining hardware can build unique work, and it
 enables hash-and-time-locked outputs for atomic swaps. The genesis block,
 existing addresses, ordinary transactions, balances and transaction IDs do not

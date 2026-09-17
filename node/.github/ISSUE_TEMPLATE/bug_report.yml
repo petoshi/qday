@@ -1,12 +1,12 @@
-name: Bug Report
-description: File a bug report
+name: QDAY bug report
+description: Report a reproducible QDAY node or wallet problem
 labels: ["bug"]
 body:
   - type: markdown
     attributes:
       value: |
-        Thanks for taking the time to fill out this bug report!
-        Note: Please search to see if an issue already exists for the bug you encountered.
+        Search existing QDAY issues first. Never attach a seed phrase, wallet
+        key, API token or password.
   - type: textarea
     id: current-behavior
     attributes:
@@ -37,8 +37,8 @@ body:
     id: version
     attributes:
       label: Version
-      description: What version of walletd are you running? If you are running from source, please provide the commit hash.
-      placeholder: v0.8.0
+      description: What QDAY version are you running? For a source build, include the commit hash.
+      placeholder: v1.0.0
     validations:
       required: true
   - type: input

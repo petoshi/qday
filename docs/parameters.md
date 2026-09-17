@@ -19,7 +19,7 @@ block heights.
 | P2P TCP port | `19771` |
 | Local wallet API TCP port | `19770` |
 
-## Scheduled v1.0.0 upgrade
+## v1.0.0 upgrade at block 9,100
 
 | Parameter | Value |
 | --- | --- |

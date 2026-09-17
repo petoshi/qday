@@ -1,11 +1,12 @@
 openapi: "3.0.0"
 info:
-  title: Walletd API
+  title: Inherited Sia walletd API
   description: >
-    Walletd exposes a REST API for managing wallets, querying blockchain data, and
-    broadcasting transactions on the Sia network. These endpoints are primarily
-    intended for integrators that need low-level access to wallet state, UTXOs,
-    and transaction construction utilities.
+    This schema belongs to the inherited Sia walletd command retained in the
+    source tree. It is not the API exposed by QDAY Node, QDAY Wallet or the
+    separate qday-walletd custody daemon. QDAY's supported local API is
+    documented in ../docs/api.md, and exchange custody is documented at
+    https://github.com/petoshi/qday-walletd/blob/main/docs/API.md.
   version: 2.11.0
 
 servers:

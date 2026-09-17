@@ -35,6 +35,17 @@ validate QDAY mainnet. Integrations should build with QDAY's copies of `core`,
 module paths, so the build must resolve those paths to the QDAY source tree
 instead of public Sia releases.
 
+Software validating block 9,100 or later needs the v1 rules. The maintained
+components and their minimum compatible releases are:
+
+| Component | Minimum version |
+| --- | --- |
+| QDAY Wallet or Node | `v1.0.0` |
+| Public PPLNS pool | `qday-pool v0.2.0` |
+| Local solo bridge | `qday-stratum v0.2.0` |
+| OpenCL GPU miner | `qday-gominer v1.0.0` |
+| Exchange custody daemon | `qday-walletd v0.2.0` |
+
 ## Mining pools
 
 The proof-of-work engine can reuse a Sia-compatible BLAKE2b-256 implementation.

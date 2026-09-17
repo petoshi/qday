@@ -175,7 +175,7 @@ before any later burns or decay. After PQ Day that amount displays as
 
 ---
 
-## ⚡ The v1.0.0 Protocol Upgrade
+## ⚡ The v1.0.0 Protocol at Block 9,100
 
 At block `9,100`, QDAY changes one piece of block construction so
 standard SiaMining hardware can finally do the job it thought it was already
@@ -190,8 +190,8 @@ The same block enables native atomic swaps: SHA-256 hashlock, height refund and
 both QDAY signatures on either exit. That gives DEX software a real settlement
 primitive without pretending QDAY is an ERC-20 wearing a skull.
 
-This is a scheduled consensus change. Every node, wallet, seed, miner, pool,
-explorer and service must run v1.0.0 before the activation block. Genesis,
+This is a consensus boundary. Every node, wallet, seed, miner, pool, explorer
+and service validating block 9,100 or later must run v1.0.0 or newer. Genesis,
 addresses, balances and ordinary signed transactions stay exactly where they
 are. Pending transactions cross the boundary with the same IDs.
 
@@ -298,6 +298,16 @@ accepts the same miners at `stratum+tcp://pool.pqday.com:3333` and pays the
 QDAY address used as the worker username. Pool details live in
 [`docs/integrations.md`](docs/integrations.md).
 
+Use versions that understand the block 9,100 rules:
+
+| Component | Minimum compatible version |
+| --- | --- |
+| QDAY Wallet or Node | `v1.0.0` |
+| qday-pool | `v0.2.0` |
+| qday-stratum | `v0.2.0` |
+| qday-gominer | `v1.0.0` |
+| qday-walletd | `v0.2.0` |
+
 The three bootstrap servers help wallets find the network. They do not mine.
 
 ---
@@ -378,7 +388,7 @@ its own genesis and network marker. The pieces worth knowing:
 - **Transactions:** coin transfers only, up to 128 inputs and 128 outputs.
 - **Authorization:** every input requires Ed25519 and SLH-DSA-SHA2-128s.
 - **SiaMining:** the compact final work marker uses the standard 4+4-byte
-  extranonce layout after the scheduled v1.0.0 activation.
+  extranonce layout from block 9,100.
 - **Atomic swaps:** SHA-256 hashlocks and absolute-height refunds, with both
   signatures required for claims and refunds.
 - **Isolation:** QDAY peers verify both the QDAY network marker and mainnet
