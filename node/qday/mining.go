@@ -44,8 +44,12 @@ type MiningTemplateTransaction struct {
 // the complete encoded block; a bridge replaces its nonce and timestamp before
 // submitting it.
 type MiningStratumTemplate struct {
-	Block        string   `json:"block"`
-	MerkleBranch []string `json:"merklebranch"`
+	Block           string   `json:"block"`
+	Coinbase1       string   `json:"coinbase1"`
+	Coinbase2       string   `json:"coinbase2"`
+	ExtraNonce1Size uint8    `json:"extranonce1Size"`
+	ExtraNonce2Size uint8    `json:"extranonce2Size"`
+	MerkleBranch    []string `json:"merklebranch"`
 }
 
 // MiningTemplateResponse contains a complete transaction-aware QDAY mining
@@ -168,9 +172,15 @@ func (s *Service) buildMiningTemplate(workNonce *uint64) (cachedMiningTemplate, 
 	if block.V2 == nil || len(block.V2.Transactions) == 0 || len(block.MinerPayouts) != 1 {
 		return cachedMiningTemplate{}, errors.New("candidate builder returned an incomplete QDAY block")
 	}
-	marker, err := consensus.ParseQdayEnvelope(block.V2.Transactions[0].ArbitraryData)
+	workIndex := 0
+	if cs.QdayV1Active(cs.Index.Height + 1) {
+		workIndex = len(block.V2.Transactions) - 1
+	}
+	marker, err := consensus.ParseQdayEnvelope(block.V2.Transactions[workIndex].ArbitraryData)
 	if err != nil || marker.Kind != consensus.QdayCoinbase {
-		return cachedMiningTemplate{}, errors.New("candidate builder returned an invalid QDAY miner marker")
+		if !cs.QdayV1Active(cs.Index.Height+1) || err != nil || marker.Kind != consensus.QdayMiningWork {
+			return cachedMiningTemplate{}, errors.New("candidate builder returned an invalid QDAY mining marker")
+		}
 	}
 
 	header, err := encodeMiningObject(block.Header())
@@ -195,6 +205,21 @@ func (s *Service) buildMiningTemplate(workNonce *uint64) (cachedMiningTemplate, 
 			return cachedMiningTemplate{}, err
 		}
 		txns = append(txns, MiningTemplateTransaction{Data: data, TxID: txn.ID().String(), TxType: "2"})
+	}
+	coinbase1 := txns[len(txns)-1].Data
+	coinbase2 := ""
+	var extraNonce1Size, extraNonce2Size uint8
+	if cs.QdayV1Active(cs.Index.Height + 1) {
+		workBytes, err := hex.DecodeString(coinbase1)
+		if err != nil || len(workBytes) != 33 {
+			return cachedMiningTemplate{}, errors.New("candidate builder returned a non-compact QDAY mining marker")
+		}
+		// V2 transaction header (9), byte-slice length (8), QDAY prefix and
+		// kind (6), then the eight-byte nonce and two-byte key count.
+		const nonceOffset, nonceSize = 23, 8
+		coinbase1 = hex.EncodeToString(workBytes[:nonceOffset])
+		coinbase2 = hex.EncodeToString(workBytes[nonceOffset+nonceSize:])
+		extraNonce1Size, extraNonce2Size = 4, 4
 	}
 	// Sia Stratum miners place their arbitrary transaction at the right edge of
 	// the commitment tree, then fold these left-side roots into its leaf hash.
@@ -231,8 +256,12 @@ func (s *Service) buildMiningTemplate(workNonce *uint64) (cachedMiningTemplate, 
 		FeesAtomic:        block.MinerPayouts[0].Value.Sub(cs.BlockReward()).ExactString(),
 		PayoutAtomic:      block.MinerPayouts[0].Value.ExactString(),
 		Stratum: MiningStratumTemplate{
-			Block:        encodedBlock,
-			MerkleBranch: merkleBranch,
+			Block:           encodedBlock,
+			Coinbase1:       coinbase1,
+			Coinbase2:       coinbase2,
+			ExtraNonce1Size: extraNonce1Size,
+			ExtraNonce2Size: extraNonce2Size,
+			MerkleBranch:    merkleBranch,
 		},
 	}
 	return cachedMiningTemplate{response: response, created: time.Now()}, nil

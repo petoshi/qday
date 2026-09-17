@@ -25,6 +25,11 @@ type QdayParams struct {
 	DecayStep       uint64         `json:"decayStep"`
 	ActivationDelay uint64         `json:"activationDelay"`
 	DefendBits      uint8          `json:"defendBits"`
+
+	// V1Height is the post-launch protocol upgrade height. It is deliberately
+	// excluded from the immutable genesis manifest: changing it schedules a
+	// hardfork without changing the existing network or genesis block.
+	V1Height uint64 `json:"-"`
 }
 
 func (p QdayParams) Validate() error {
@@ -81,6 +86,7 @@ const (
 	QdayTransfer    byte = 1
 	QdayCoinbase    byte = 2
 	QdayCanaryProof byte = 3
+	QdayMiningWork  byte = 4
 )
 
 // QdayEnvelope uses fixed-width, bounded binary fields. Its nonce is committed
@@ -117,7 +123,7 @@ func ParseQdayEnvelope(b []byte) (e QdayEnvelope, err error) {
 	if e.Kind == QdayCanaryProof {
 		w = 32
 	}
-	if e.Kind < QdayTransfer || e.Kind > QdayCanaryProof || n > 128 || len(b) != 16+64*n+w {
+	if e.Kind < QdayTransfer || e.Kind > QdayMiningWork || n > 128 || len(b) != 16+64*n+w {
 		return e, errors.New("invalid QDAY envelope")
 	}
 	e.Keys = make([]types.QdayKeys, n)
@@ -132,6 +138,12 @@ func ParseQdayEnvelope(b []byte) (e QdayEnvelope, err error) {
 		copy(e.Witness[:], b[len(b)-32:])
 	}
 	return e, nil
+}
+
+// QdayV1Active reports whether the post-launch mining and atomic-swap rules
+// apply to height. A zero height leaves the upgrade unscheduled.
+func (s State) QdayV1Active(height uint64) bool {
+	return s.Network.Qday != nil && s.Network.Qday.V1Height != 0 && height >= s.Network.Qday.V1Height
 }
 
 func (s State) QdayActive(height uint64) bool {
@@ -207,6 +219,9 @@ func validateQdayTransaction(ms *MidState, txn types.V2Transaction) error {
 	if e.Kind == QdayCoinbase {
 		return errors.New("coinbase marker is only valid first in a block")
 	}
+	if e.Kind == QdayMiningWork {
+		return errors.New("mining work marker is only valid last in a block")
+	}
 	if e.Kind == QdayCanaryProof {
 		if ms.base.QdayHeight != 0 || ms.qdayProved || e.Nonce != 0 || !VerifyQdayProof(ms.base.Network.Qday.Canary, e.Witness) {
 			return errors.New("invalid or repeated QDAY proof")
@@ -224,15 +239,11 @@ func validateQdayTransaction(ms *MidState, txn types.V2Transaction) error {
 	// validation checks its hash and both signatures; weaker policies cannot
 	// spend native coins, even when supplied with otherwise valid signatures.
 	for _, in := range txn.SiacoinInputs {
-		p, ok := in.SatisfiedPolicy.Policy.Type.(types.PolicyTypeThreshold)
-		if !ok || p.N != 2 || len(p.Of) != 2 {
-			return errors.New("input must use native hybrid policy")
+		if types.IsQdayNativePolicy(in.SatisfiedPolicy.Policy) {
+			continue
 		}
-		if _, ok := p.Of[0].Type.(types.PolicyTypePublicKey); !ok {
-			return errors.New("missing classical policy")
-		}
-		if _, ok := p.Of[1].Type.(types.PolicyTypeSLHDSA); !ok {
-			return errors.New("missing reserve policy")
+		if !ms.base.QdayV1Active(ms.base.childHeight()) || !types.IsQdaySwapSpendPolicy(in.SatisfiedPolicy.Policy) {
+			return errors.New("input must use native hybrid or atomic-swap policy")
 		}
 	}
 	if ms.base.QdayActive(ms.base.childHeight()) && !QdayWorkValid(ms.base.QdayWorkIntent(txn), e.Nonce, ms.base.Network.Qday.DefendBits) {
@@ -241,7 +252,7 @@ func validateQdayTransaction(ms *MidState, txn types.V2Transaction) error {
 	return nil
 }
 
-func validateQdayCoinbase(b types.Block) error {
+func validateQdayBlockMarkers(s State, b types.Block) error {
 	if b.V2 == nil || len(b.V2.Transactions) == 0 || len(b.Transactions) != 0 || len(b.MinerPayouts) != 1 {
 		return errors.New("missing QDAY coinbase marker")
 	}
@@ -249,6 +260,17 @@ func validateQdayCoinbase(b types.Block) error {
 	e, err := ParseQdayEnvelope(txn.ArbitraryData)
 	if err != nil || e.Kind != QdayCoinbase || len(e.Keys) != 1 || e.Keys[0].Policy().Address() != b.MinerPayouts[0].Address || len(txn.SiacoinInputs)+len(txn.SiacoinOutputs) != 0 || !txn.MinerFee.IsZero() || qdayUnsupported(txn) {
 		return errors.New("invalid QDAY coinbase marker")
+	}
+	if s.QdayV1Active(s.childHeight()) {
+		if len(b.V2.Transactions) < 2 {
+			return errors.New("missing QDAY mining work marker")
+		}
+		work := b.V2.Transactions[len(b.V2.Transactions)-1]
+		we, err := ParseQdayEnvelope(work.ArbitraryData)
+		if err != nil || we.Kind != QdayMiningWork || len(we.Keys) != 0 || we.Witness != ([32]byte{}) ||
+			len(work.SiacoinInputs)+len(work.SiacoinOutputs) != 0 || !work.MinerFee.IsZero() || qdayUnsupported(work) {
+			return errors.New("invalid QDAY mining work marker")
+		}
 	}
 	return nil
 }

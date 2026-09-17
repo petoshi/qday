@@ -3,6 +3,7 @@ package qday
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
@@ -271,4 +272,84 @@ func TestMiningTemplateTracksPoolAndSubmits(t *testing.T) {
 	if got := block.MinerPayouts[0].Value; got != s.CM.TipState().BlockReward().Add(types.HastingsPerSiacoin.Div64(1000)) {
 		t.Fatal("template did not pay the transaction fee to the miner")
 	}
+}
+
+func TestV1MiningTemplateUsesCompactSiaWork(t *testing.T) {
+	s := newTestService(t)
+	if _, err := s.Create(context.Background(), "v1-mining-test-password", seedwallet.QdaySeedPhrase([32]byte{0x51, 0x44, 0x41, 0x59})); err != nil {
+		t.Fatal(err)
+	}
+	synced(t, s)
+	s.Manifest.Network.Qday.V1Height = 1
+
+	workNonce := uint64(1)
+	template, err := s.MiningTemplateForWork(context.Background(), "", &workNonce)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(template.Transactions) != 2 {
+		t.Fatalf("v1 template has %d transactions, expected two markers", len(template.Transactions))
+	} else if template.Stratum.ExtraNonce1Size != 4 || template.Stratum.ExtraNonce2Size != 4 {
+		t.Fatalf("wrong extranonce split: %d+%d", template.Stratum.ExtraNonce1Size, template.Stratum.ExtraNonce2Size)
+	}
+	coinbase1, err := hex.DecodeString(template.Stratum.Coinbase1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	coinbase2, err := hex.DecodeString(template.Stratum.Coinbase2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(coinbase1) != 23 || len(coinbase2) != 2 {
+		t.Fatalf("compact transaction split is %d+8+%d bytes, expected 23+8+2", len(coinbase1), len(coinbase2))
+	}
+	extraNonce1 := []byte{1, 2, 3, 4}
+	extraNonce2 := []byte{5, 6, 7, 8}
+	encodedWork := append(append(append([]byte{}, coinbase1...), extraNonce1...), extraNonce2...)
+	encodedWork = append(encodedWork, coinbase2...)
+	if len(encodedWork) != 33 {
+		t.Fatalf("compact work transaction is %d bytes", len(encodedWork))
+	}
+	var work types.V2Transaction
+	decoder := types.NewBufDecoder(encodedWork)
+	work.DecodeFrom(decoder)
+	var canonical bytes.Buffer
+	encoder := types.NewEncoder(&canonical)
+	work.EncodeTo(encoder)
+	if decoder.Err() != nil || encoder.Flush() != nil || !bytes.Equal(canonical.Bytes(), encodedWork) {
+		t.Fatalf("ASIC work did not reconstruct a canonical transaction: %v", decoder.Err())
+	}
+	envelope, err := consensus.ParseQdayEnvelope(work.ArbitraryData)
+	if err != nil || envelope.Kind != consensus.QdayMiningWork || envelope.Nonce != binary.LittleEndian.Uint64(append(extraNonce1, extraNonce2...)) {
+		t.Fatalf("wrong reconstructed mining envelope: %+v, %v", envelope, err)
+	}
+
+	root := work.MerkleLeafHash()
+	for _, encoded := range template.Stratum.MerkleBranch {
+		branch, err := hex.DecodeString(encoded)
+		if err != nil || len(branch) != 32 {
+			t.Fatalf("invalid Merkle branch %q", encoded)
+		}
+		var left types.Hash256
+		copy(left[:], branch)
+		root = blake2b.SumPair(left, root)
+	}
+	block := decodeTemplateBlock(t, template)
+	block.V2.Transactions[len(block.V2.Transactions)-1] = work
+	block.V2.Commitment = root
+	block = mineHeaderForTemplate(t, s.CM.TipState(), block)
+	if err := consensus.ValidateBlock(s.CM.TipState(), block, consensus.V1BlockSupplement{}); err != nil {
+		t.Fatal("reconstructed Sia Stratum block failed consensus: ", err)
+	}
+}
+
+func mineHeaderForTemplate(t *testing.T, cs consensus.State, block types.Block) types.Block {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	block, err := mining.Mine(ctx, cs, block, 2, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return block
 }

@@ -15,6 +15,11 @@ import (
 	"go.sia.tech/core/types"
 )
 
+// QdayV1ActivationHeight is intentionally left unscheduled while v1.0.0 is
+// being tested. Set it to the user-selected mainnet height immediately before
+// the release is built; zero keeps the new consensus rules inactive.
+const QdayV1ActivationHeight uint64 = 0
+
 // QdayManifest is the complete launch artifact. Changing any parameter changes
 // the genesis ID, which the inherited P2P handshake enforces.
 type QdayManifest struct {
@@ -72,6 +77,7 @@ func NewQdayManifestWithMessage(owner types.QdayAddress, timestamp time.Time, de
 	// Start at approximately 2^20 hashes per block for a CPU-accessible launch.
 	n := consensus.Network{Name: "qday-mainnet", BlockInterval: time.Minute, MaturityDelay: 60, InitialTarget: types.BlockID{2: 16}}
 	n.Qday = &consensus.QdayParams{RulesVersion: 2, Canary: consensus.QdayCanary(), Reward: types.Siacoins(8), ProofFee: types.Siacoins(1), MiningBlocks: 1_000_000, PremineAmount: types.Siacoins(500_000), ShieldBlocks: 1440, DecayBlocks: 10080, DecayStep: 60, ActivationDelay: 6, DefendBits: 20}
+	n.Qday.V1Height = QdayV1ActivationHeight
 	if development {
 		n.Name = "qday-devnet"
 		n.BlockInterval = 2 * time.Second
@@ -130,7 +136,7 @@ func NewQdayManifestWithMessage(owner types.QdayAddress, timestamp time.Time, de
 	return QdayManifest{Network: n, Genesis: genesis, Premine: owner, GenesisMessage: message, Development: development}, nil
 }
 
-func (m QdayManifest) Validate() error {
+func (m *QdayManifest) Validate() error {
 	expected, err := NewQdayManifestWithMessage(m.Premine, m.Genesis.Timestamp, m.Development, m.GenesisMessage)
 	if err != nil {
 		return err
@@ -143,6 +149,9 @@ func (m QdayManifest) Validate() error {
 	if !bytes.Equal(a, b) {
 		return fmt.Errorf("QDAY manifest differs from fixed consensus rules; expected genesis %s", expected.Genesis.ID())
 	}
+	// V1Height is a post-genesis hardfork schedule and is not serialized in the
+	// immutable manifest. Hydrate it only after every manifest byte validates.
+	m.Network.Qday.V1Height = expected.Network.Qday.V1Height
 	return nil
 }
 

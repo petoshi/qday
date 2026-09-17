@@ -975,7 +975,7 @@ func validateSupplement(s State, b types.Block, bs V1BlockSupplement) error {
 // e.g. in p2p networking code; see MaxFutureTimestamp.
 func ValidateBlock(s State, b types.Block, bs V1BlockSupplement) error {
 	if s.Network.Qday != nil && s.childHeight() > 0 {
-		if err := validateQdayCoinbase(b); err != nil {
+		if err := validateQdayBlockMarkers(s, b); err != nil {
 			return err
 		}
 	}
@@ -997,7 +997,7 @@ func ValidateBlock(s State, b types.Block, bs V1BlockSupplement) error {
 		ms.ApplyTransaction(txn, bs.Transactions[i])
 	}
 	for i, txn := range b.V2Transactions() {
-		if s.Network.Qday != nil && i == 0 {
+		if s.Network.Qday != nil && (i == 0 || (s.QdayV1Active(s.childHeight()) && i == len(b.V2Transactions())-1)) {
 			ms.ApplyV2Transaction(txn)
 			continue
 		}

@@ -40,6 +40,9 @@ func CandidateWithNonce(s consensus.State, miner types.QdayKeys, txns []types.V2
 		b.V2.Transactions = append(b.V2.Transactions, txn)
 		b.MinerPayouts[0].Value = b.MinerPayouts[0].Value.Add(txn.MinerFee)
 	}
+	if s.QdayV1Active(s.Index.Height + 1) {
+		b.V2.Transactions = append(b.V2.Transactions, types.V2Transaction{ArbitraryData: (consensus.QdayEnvelope{Kind: consensus.QdayMiningWork, Nonce: markerNonce}).Encode()})
+	}
 	b.V2.Commitment = s.Commitment(miner.Policy().Address(), nil, b.V2.Transactions)
 	return b
 }
