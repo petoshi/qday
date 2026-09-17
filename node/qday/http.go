@@ -117,6 +117,58 @@ func (s *Service) Handler(token string, listenAddress string) http.Handler {
 			respond(v, err)
 			return
 		}
+		if r.Method == http.MethodGet && r.URL.Path == "/api/swap/keys" {
+			v, err := s.AtomicSwapPublicKeys()
+			respond(v, err)
+			return
+		}
+		if r.Method == http.MethodPost && (r.URL.Path == "/api/swap/derive" || r.URL.Path == "/api/swap/watch" || r.URL.Path == "/api/swap/status") {
+			if r.Header.Get("Content-Type") != "application/json" {
+				http.Error(w, "POST application/json required", http.StatusMethodNotAllowed)
+				return
+			}
+			var contract AtomicSwapContract
+			decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10))
+			decoder.DisallowUnknownFields()
+			if err := decoder.Decode(&contract); err != nil || decoder.Decode(new(any)) != io.EOF {
+				respond(nil, errors.New("invalid atomic-swap contract"))
+				return
+			}
+			var value AtomicSwapView
+			var err error
+			switch r.URL.Path {
+			case "/api/swap/derive":
+				value, err = s.DeriveAtomicSwap(contract)
+			case "/api/swap/watch":
+				value, err = s.WatchAtomicSwap(contract)
+			case "/api/swap/status":
+				value, err = s.AtomicSwapStatus(contract)
+			}
+			respond(value, err)
+			return
+		}
+		if r.Method == http.MethodPost && (r.URL.Path == "/api/swap/claim" || r.URL.Path == "/api/swap/refund") {
+			if r.Header.Get("Content-Type") != "application/json" {
+				http.Error(w, "POST application/json required", http.StatusMethodNotAllowed)
+				return
+			}
+			var body AtomicSwapSpendRequest
+			decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 20<<10))
+			decoder.DisallowUnknownFields()
+			if err := decoder.Decode(&body); err != nil || decoder.Decode(new(any)) != io.EOF {
+				respond(nil, errors.New("invalid atomic-swap spend request"))
+				return
+			}
+			var id types.TransactionID
+			var err error
+			if r.URL.Path == "/api/swap/claim" {
+				id, err = s.ClaimAtomicSwap(r.Context(), body)
+			} else {
+				id, err = s.RefundAtomicSwap(r.Context(), body)
+			}
+			respond(map[string]string{"transaction": id.String()}, err)
+			return
+		}
 		if r.Method == http.MethodPost && r.URL.Path == "/api/miner/getblocktemplate" {
 			if r.Header.Get("Content-Type") != "application/json" {
 				http.Error(w, "POST application/json required", http.StatusMethodNotAllowed)

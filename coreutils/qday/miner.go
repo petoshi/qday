@@ -105,10 +105,9 @@ func Mine(ctx context.Context, s consensus.State, b types.Block, threads int, ha
 	}
 }
 
-// SignTransfer binds the complete transaction to both keys. Every input in a
-// native single-address wallet has the same message, so one signature suffices
-// computationally; the witness is attached independently to each input.
-func SignTransfer(ctx context.Context, s consensus.State, txn *types.V2Transaction, keys *types.QdayPrivateKeys) error {
+// PrepareTransactionWork updates the envelope nonce with any DEFEND work
+// required at the next height. It must run before signatures are created.
+func PrepareTransactionWork(ctx context.Context, s consensus.State, txn *types.V2Transaction) error {
 	e, err := consensus.ParseQdayEnvelope(txn.ArbitraryData)
 	if err != nil {
 		return err
@@ -127,6 +126,16 @@ func SignTransfer(ctx context.Context, s consensus.State, txn *types.V2Transacti
 		}
 		txn.ArbitraryData = e.Encode()
 	}
+	return nil
+}
+
+// SignTransfer binds the complete transaction to both keys. Every input in a
+// native single-address wallet has the same message, so one signature suffices
+// computationally; the witness is attached independently to each input.
+func SignTransfer(ctx context.Context, s consensus.State, txn *types.V2Transaction, keys *types.QdayPrivateKeys) error {
+	if err := PrepareTransactionWork(ctx, s, txn); err != nil {
+		return err
+	}
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -139,5 +148,37 @@ func SignTransfer(ctx context.Context, s consensus.State, txn *types.V2Transacti
 	for i := range txn.SiacoinInputs {
 		txn.SiacoinInputs[i].SatisfiedPolicy = sp
 	}
+	return nil
+}
+
+// SignAtomicSwapClaim prepares DEFEND work and signs a one-input claim.
+func SignAtomicSwapClaim(ctx context.Context, s consensus.State, txn *types.V2Transaction, swap types.QdayAtomicSwap, keys *types.QdayPrivateKeys, secret [32]byte) error {
+	if len(txn.SiacoinInputs) != 1 {
+		return errors.New("atomic-swap claim must spend exactly one input")
+	}
+	if err := PrepareTransactionWork(ctx, s, txn); err != nil {
+		return err
+	}
+	witness, err := swap.Claim(s.InputSigHash(*txn), keys, secret)
+	if err != nil {
+		return err
+	}
+	txn.SiacoinInputs[0].SatisfiedPolicy = witness
+	return nil
+}
+
+// SignAtomicSwapRefund prepares DEFEND work and signs a one-input refund.
+func SignAtomicSwapRefund(ctx context.Context, s consensus.State, txn *types.V2Transaction, swap types.QdayAtomicSwap, keys *types.QdayPrivateKeys) error {
+	if len(txn.SiacoinInputs) != 1 {
+		return errors.New("atomic-swap refund must spend exactly one input")
+	}
+	if err := PrepareTransactionWork(ctx, s, txn); err != nil {
+		return err
+	}
+	witness, err := swap.RefundSpend(s.InputSigHash(*txn), keys)
+	if err != nil {
+		return err
+	}
+	txn.SiacoinInputs[0].SatisfiedPolicy = witness
 	return nil
 }
