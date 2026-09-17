@@ -102,6 +102,59 @@ func TestBurn(t *testing.T) {
 	}
 }
 
+func TestBurnCrossesV1Activation(t *testing.T) {
+	s := newTestService(t)
+	if _, err := s.Create(context.Background(), "burn-activation-test-password", seedwallet.QdaySeedPhrase([32]byte{0x51, 0x44, 0x41, 0x59})); err != nil {
+		t.Fatal(err)
+	}
+	synced(t, s)
+	s.Manifest.Network.Qday.V1Height = 2
+
+	preActivationID, err := s.Burn(context.Background(), types.Siacoins(500))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cs := s.CM.TipState()
+	before := mining.Candidate(cs, s.keys.Public, nil, cs.PrevTimestamps[0].Add(2*time.Second))
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	before, err = mining.Mine(ctx, cs, before, 2, nil)
+	cancel()
+	if err != nil {
+		t.Fatal(err)
+	} else if err = s.CM.AddBlocks([]types.Block{before}); err != nil {
+		t.Fatal(err)
+	}
+	synced(t, s)
+	pool := s.CM.V2PoolTransactions()
+	if len(pool) != 1 || pool[0].ID() != preActivationID {
+		t.Fatal("pre-activation block dropped or changed the pending burn")
+	}
+
+	activation := mineForTest(t, s)
+	if s.CM.Tip().Height != 2 || len(activation.V2.Transactions) != 3 || activation.V2.Transactions[1].ID() != preActivationID {
+		t.Fatal("activation block did not confirm the pending burn between its protocol markers")
+	}
+	marker, err := consensus.ParseQdayEnvelope(activation.V2.Transactions[2].ArbitraryData)
+	if err != nil || marker.Kind != consensus.QdayMiningWork {
+		t.Fatal("activation block is missing the v1 mining work marker")
+	}
+
+	postActivationID, err := s.Burn(context.Background(), types.Siacoins(1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	after := mineForTest(t, s)
+	if len(after.V2.Transactions) != 3 || after.V2.Transactions[1].ID() != postActivationID {
+		t.Fatal("post-activation burn was not confirmed")
+	}
+	supply, err := s.Supply()
+	if err != nil {
+		t.Fatal(err)
+	} else if supply.BurnedSupply.QDAY != "501" {
+		t.Fatalf("wrong burned supply after activation: %v", supply.BurnedSupply.QDAY)
+	}
+}
+
 func TestBurnHTTP(t *testing.T) {
 	s := newTestService(t)
 	if _, err := s.Create(context.Background(), "burn-http-password", seedwallet.QdaySeedPhrase([32]byte{0x51, 0x44, 0x41, 0x59})); err != nil {
