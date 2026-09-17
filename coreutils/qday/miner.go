@@ -19,7 +19,14 @@ import (
 func Candidate(s consensus.State, miner types.QdayKeys, txns []types.V2Transaction, timestamp time.Time) types.Block {
 	var entropy [8]byte
 	rand.Read(entropy[:])
-	marker := types.V2Transaction{ArbitraryData: (consensus.QdayEnvelope{Kind: consensus.QdayCoinbase, Nonce: binary.LittleEndian.Uint64(entropy[:]), Keys: []types.QdayKeys{miner}}).Encode()}
+	return CandidateWithNonce(s, miner, txns, timestamp, binary.LittleEndian.Uint64(entropy[:]))
+}
+
+// CandidateWithNonce builds a candidate with a caller-selected coinbase marker
+// nonce. Pool controllers use the nonce to give independent work to miners
+// without changing the payout or transaction set.
+func CandidateWithNonce(s consensus.State, miner types.QdayKeys, txns []types.V2Transaction, timestamp time.Time, markerNonce uint64) types.Block {
+	marker := types.V2Transaction{ArbitraryData: (consensus.QdayEnvelope{Kind: consensus.QdayCoinbase, Nonce: markerNonce, Keys: []types.QdayKeys{miner}}).Encode()}
 	b := types.Block{ParentID: s.Index.ID, Timestamp: timestamp.UTC().Truncate(time.Second), MinerPayouts: []types.SiacoinOutput{{Value: s.BlockReward(), Address: miner.Policy().Address()}}, V2: &types.V2BlockData{Height: s.Index.Height + 1, Transactions: []types.V2Transaction{marker}}}
 	ms := consensus.NewMidState(s)
 	weight := s.V2TransactionWeight(marker) + 128

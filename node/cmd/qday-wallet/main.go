@@ -25,7 +25,7 @@ import (
 	"go.sia.tech/walletd/v2/internal/localapp"
 )
 
-var version = "0.8.0"
+var version = "0.8.1"
 
 type distribution struct {
 	Format  int      `json:"format"`

@@ -23,9 +23,10 @@ Authorization: Bearer <token>
 Browser session tokens use the same header. Every POST request must use
 `Content-Type: application/json`. The server rejects unknown JSON fields,
 extra values after the request object and ordinary bodies larger than 8,192
-bytes. The session endpoint has a 256-byte limit, `getblocktemplate` has a
-1,024-byte limit and `submitblock` accepts up to 8 MiB of binary block data
-encoded as hexadecimal JSON.
+bytes. The session and block-status endpoints have a 256-byte limit,
+`getblocktemplate` has a 1,024-byte limit, a pool payout batch has a 1 MiB
+limit and `submitblock` accepts up to 8 MiB of binary block data encoded as
+hexadecimal JSON.
 
 The `Host` header must name the configured local listener as `127.0.0.1`,
 `localhost` or `::1` with the correct port. If the request has an `Origin`
@@ -392,6 +393,16 @@ immediately:
 {"longpollid":""}
 ```
 
+A public pool can request an uncached candidate with a distinct marker nonce:
+
+```json
+{"worknonce":1844674407370955161}
+```
+
+`worknonce` and `longpollid` are mutually exclusive. A controller should use
+one long-poll request to watch the chain and mempool, then use a different
+nonzero `worknonce` for each independently assigned miner template.
+
 The response follows Sia `minerd`'s BIP22-shaped template and adds `header`, the
 complete 80-byte BLAKE2b work header encoded as 160 hexadecimal characters:
 
@@ -410,6 +421,10 @@ complete 80-byte BLAKE2b work header encoded as 160 hexadecimal characters:
   "curtime":1789234567,
   "version":2,
   "bits":"07012345",
+  "worknonce":1844674407370955161,
+  "blockRewardAtomic":"8000000000000000000000000",
+  "feesAtomic":"1000000000000000000000",
+  "payoutAtomic":"8001000000000000000000000",
   "stratum":{
     "block":"<hex-encoded complete QDAY v2 block>",
     "merklebranch":["<64 hex characters>"]
@@ -443,6 +458,81 @@ The endpoint does not accept a header without its corresponding payout, miner
 marker and transactions.
 
 Source: [template construction and block submission](../node/qday/mining.go).
+
+### `POST /api/miner/blockstatus`
+
+Returns selected-chain and maturity state for a submitted block:
+
+```json
+{"block":"<64 hex characters>"}
+```
+
+```json
+{
+  "block":"<64 hex characters>",
+  "known":true,
+  "canonical":true,
+  "height":6000,
+  "tipHeight":6020,
+  "confirmations":21,
+  "maturityHeight":6060
+}
+```
+
+`known` means the local chain manager has the block. `canonical` means it is
+on the selected chain. A miner payout is spendable at `maturityHeight`.
+
+## Public pool accounting
+
+These authenticated endpoints are for a pool controller on the same machine.
+They expose wallet signing and must never be published through the pool
+dashboard or reverse proxy.
+
+### `POST /api/pool/payout`
+
+Creates or resumes one exact multi-recipient payout batch:
+
+```json
+{
+  "requestID":"payout-4c584cd7f3929c35",
+  "fromAddress":"qday1p...",
+  "expectedUnitAtomic":"1000000000000000000000000",
+  "feeAtomic":"1000000000000000000000",
+  "outputs":[
+    {"address":"qday1p...","amountAtomic":"42000000000000000000000000"}
+  ]
+}
+```
+
+All monetary fields are canonical base-10 atomic integers. The request accepts
+1 through 127 unique output addresses. `expectedUnitAtomic` must match the
+current display unit, and `fromAddress` must match the unlocked wallet.
+
+```json
+{
+  "requestID":"payout-4c584cd7f3929c35",
+  "transaction":"<64 hex characters>",
+  "outputs":1,
+  "status":"queued"
+}
+```
+
+The node signs and persists the transaction before adding it to the mempool.
+It updates accumulator proofs, rebroadcasts after restarts and tracks it
+through reorganizations. Status moves from `queued` to `confirming`, then to
+`confirmed` after six blocks. Repeating the same request ID and contents
+returns the same transaction. Reusing the ID with different contents fails.
+
+### `POST /api/pool/defend`
+
+```json
+{}
+```
+
+Runs one wallet maintenance pass without starting CPU mining. Before PQ Day,
+or when no output needs renewal, it returns `{"status":"idle"}`. A queued
+renewal returns its transaction ID. Pool controllers may poll this operation;
+it does not create duplicate renewals for outputs already being spent.
 
 ### `POST /api/start`
 

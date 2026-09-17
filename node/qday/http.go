@@ -133,8 +133,30 @@ func (s *Service) Handler(token string, listenAddress string) http.Handler {
 				respond(nil, errors.New("trailing request body"))
 				return
 			}
-			value, err := s.MiningTemplate(r.Context(), body.LongPollID)
+			value, err := s.MiningTemplateForWork(r.Context(), body.LongPollID, body.WorkNonce)
 			respond(value, err)
+			return
+		}
+		if r.Method == http.MethodPost && r.URL.Path == "/api/miner/blockstatus" {
+			if r.Header.Get("Content-Type") != "application/json" {
+				http.Error(w, "POST application/json required", http.StatusMethodNotAllowed)
+				return
+			}
+			var body struct {
+				Block string `json:"block"`
+			}
+			decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 256))
+			decoder.DisallowUnknownFields()
+			if err := decoder.Decode(&body); err != nil || decoder.Decode(new(any)) != io.EOF {
+				respond(nil, errors.New("invalid request body"))
+				return
+			}
+			var id types.BlockID
+			if err := id.UnmarshalText([]byte(strings.TrimSpace(body.Block))); err != nil {
+				respond(nil, errors.New("block must be a 32-byte hexadecimal block ID"))
+				return
+			}
+			respond(s.MiningStatus(id), nil)
 			return
 		}
 		if r.Method == http.MethodPost && r.URL.Path == "/api/miner/submitblock" {
@@ -155,6 +177,37 @@ func (s *Service) Handler(token string, listenAddress string) http.Handler {
 			}
 			id, err := s.SubmitMiningBlock(body.Params[0])
 			respond(map[string]any{"block": id}, err)
+			return
+		}
+		if r.Method == http.MethodPost && r.URL.Path == "/api/pool/payout" {
+			if r.Header.Get("Content-Type") != "application/json" {
+				http.Error(w, "POST application/json required", http.StatusMethodNotAllowed)
+				return
+			}
+			var body PoolPayoutRequest
+			decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+			decoder.DisallowUnknownFields()
+			if err := decoder.Decode(&body); err != nil || decoder.Decode(new(any)) != io.EOF {
+				respond(nil, errors.New("invalid request body"))
+				return
+			}
+			value, err := s.PoolPayout(r.Context(), body)
+			respond(value, err)
+			return
+		}
+		if r.Method == http.MethodPost && r.URL.Path == "/api/pool/defend" {
+			if r.Header.Get("Content-Type") != "application/json" {
+				http.Error(w, "POST application/json required", http.StatusMethodNotAllowed)
+				return
+			}
+			decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64))
+			var body struct{}
+			if err := decoder.Decode(&body); err != nil || decoder.Decode(new(any)) != io.EOF {
+				respond(nil, errors.New("request body must be an empty JSON object"))
+				return
+			}
+			value, err := s.PoolDefend(r.Context())
+			respond(value, err)
 			return
 		}
 		if r.Method != "POST" || r.Header.Get("Content-Type") != "application/json" {

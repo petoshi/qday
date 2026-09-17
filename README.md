@@ -184,9 +184,9 @@ wallet. The executable needs the bundled `resources` directory beside it.
 ### Linux
 
 ```bash
-sha256sum -c QDAY-Wallet-0.8.0-mainnet-linux-amd64.tar.gz.sha256
-tar -xzf QDAY-Wallet-0.8.0-mainnet-linux-amd64.tar.gz
-cd QDAY-Wallet-0.8.0-mainnet-linux-amd64
+sha256sum -c QDAY-Wallet-0.8.1-mainnet-linux-amd64.tar.gz.sha256
+tar -xzf QDAY-Wallet-0.8.1-mainnet-linux-amd64.tar.gz
+cd QDAY-Wallet-0.8.1-mainnet-linux-amd64
 ./QDAY-Wallet
 ```
 
@@ -196,7 +196,7 @@ Verify the ZIP in PowerShell and compare the result with the downloaded
 `.sha256` file:
 
 ```powershell
-Get-FileHash .\QDAY-Wallet-0.8.0-mainnet-windows-amd64.zip -Algorithm SHA256
+Get-FileHash .\QDAY-Wallet-0.8.1-mainnet-windows-amd64.zip -Algorithm SHA256
 ```
 
 Extract the ZIP, then open `QDAY-Wallet.exe`. The Windows executable is
@@ -209,9 +209,9 @@ turn a wallet into somebody else's wallet.
 Use `macos-arm64` on Apple Silicon and `macos-amd64` on Intel:
 
 ```bash
-shasum -a 256 -c QDAY-Wallet-0.8.0-mainnet-macos-arm64.tar.gz.sha256
-tar -xzf QDAY-Wallet-0.8.0-mainnet-macos-arm64.tar.gz
-cd QDAY-Wallet-0.8.0-mainnet-macos-arm64
+shasum -a 256 -c QDAY-Wallet-0.8.1-mainnet-macos-arm64.tar.gz.sha256
+tar -xzf QDAY-Wallet-0.8.1-mainnet-macos-arm64.tar.gz
+cd QDAY-Wallet-0.8.1-mainnet-macos-arm64
 ./QDAY-Wallet
 ```
 
@@ -243,8 +243,8 @@ platform. It contains the same node binary bundled with the graphical wallet,
 the fixed mainnet manifest, deployment files and public protocol docs.
 
 ```bash
-tar -xzf QDAY-Node-0.8.0-mainnet-linux-amd64.tar.gz
-cd QDAY-Node-0.8.0-mainnet-linux-amd64
+tar -xzf QDAY-Node-0.8.1-mainnet-linux-amd64.tar.gz
+cd QDAY-Node-0.8.1-mainnet-linux-amd64
 ./qday --network ./qday-mainnet.json
 ```
 
@@ -271,7 +271,9 @@ BLAKE2b search while the node handles QDAY's marker, transaction validation,
 fees and commitment. The separate
 [`qday-stratum`](https://github.com/petoshi/qday-stratum) bridge connects
 SiaMining-compatible GPU or ASIC software directly to a local QDAY wallet.
-Pool details live in
+The registration-free [`qday-pool`](https://github.com/petoshi/qday-pool)
+accepts the same miners at `stratum+tcp://pool.pqday.com:3333` and pays the
+QDAY address used as the worker username. Pool details live in
 [`docs/integrations.md`](docs/integrations.md).
 
 The three bootstrap servers help wallets find the network. They do not mine.

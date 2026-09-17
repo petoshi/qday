@@ -23,7 +23,8 @@ const miningTemplateMaxAge = 30 * time.Second
 // MiningTemplateRequest follows the long-poll field used by Sia minerd and
 // BIP22-compatible pool controllers.
 type MiningTemplateRequest struct {
-	LongPollID string `json:"longpollid,omitempty"`
+	LongPollID string  `json:"longpollid,omitempty"`
+	WorkNonce  *uint64 `json:"worknonce,omitempty"`
 }
 
 // MiningTemplateTransaction is a serialized transaction or miner payout in a
@@ -62,7 +63,24 @@ type MiningTemplateResponse struct {
 	Timestamp         int64                       `json:"curtime"`
 	Version           uint32                      `json:"version"`
 	Bits              string                      `json:"bits"`
+	WorkNonce         uint64                      `json:"worknonce"`
+	BlockRewardAtomic string                      `json:"blockRewardAtomic"`
+	FeesAtomic        string                      `json:"feesAtomic"`
+	PayoutAtomic      string                      `json:"payoutAtomic"`
 	Stratum           MiningStratumTemplate       `json:"stratum"`
+}
+
+// MiningBlockStatus reports whether a submitted block is known and remains on
+// the selected chain. MaturityHeight is the first height where its payout may
+// be spent.
+type MiningBlockStatus struct {
+	Block          types.BlockID `json:"block"`
+	Known          bool          `json:"known"`
+	Canonical      bool          `json:"canonical"`
+	Height         uint64        `json:"height,omitempty"`
+	TipHeight      uint64        `json:"tipHeight"`
+	Confirmations  uint64        `json:"confirmations"`
+	MaturityHeight uint64        `json:"maturityHeight,omitempty"`
 }
 
 // MiningSubmitBlockRequest follows Sia minerd's submitblock request shape.
@@ -118,7 +136,7 @@ func (s *Service) invalidateMiningTemplate() {
 	s.miningMu.Unlock()
 }
 
-func (s *Service) buildMiningTemplate() (cachedMiningTemplate, error) {
+func (s *Service) buildMiningTemplate(workNonce *uint64) (cachedMiningTemplate, error) {
 	s.mu.Lock()
 	keys := s.keys
 	if keys == nil {
@@ -138,13 +156,21 @@ func (s *Service) buildMiningTemplate() (cachedMiningTemplate, error) {
 	var cs consensus.State
 	for {
 		cs = s.CM.TipState()
-		block = mining.Candidate(cs, public, s.CM.V2PoolTransactions(), types.CurrentTimestamp())
+		if workNonce == nil {
+			block = mining.Candidate(cs, public, s.CM.V2PoolTransactions(), types.CurrentTimestamp())
+		} else {
+			block = mining.CandidateWithNonce(cs, public, s.CM.V2PoolTransactions(), types.CurrentTimestamp(), *workNonce)
+		}
 		if s.CM.Tip() == cs.Index {
 			break
 		}
 	}
 	if block.V2 == nil || len(block.V2.Transactions) == 0 || len(block.MinerPayouts) != 1 {
 		return cachedMiningTemplate{}, errors.New("candidate builder returned an incomplete QDAY block")
+	}
+	marker, err := consensus.ParseQdayEnvelope(block.V2.Transactions[0].ArbitraryData)
+	if err != nil || marker.Kind != consensus.QdayCoinbase {
+		return cachedMiningTemplate{}, errors.New("candidate builder returned an invalid QDAY miner marker")
 	}
 
 	header, err := encodeMiningObject(block.Header())
@@ -200,6 +226,10 @@ func (s *Service) buildMiningTemplate() (cachedMiningTemplate, error) {
 		Timestamp:         block.Timestamp.Unix(),
 		Version:           2,
 		Bits:              compactMiningDifficulty(cs.Difficulty),
+		WorkNonce:         marker.Nonce,
+		BlockRewardAtomic: cs.BlockReward().ExactString(),
+		FeesAtomic:        block.MinerPayouts[0].Value.Sub(cs.BlockReward()).ExactString(),
+		PayoutAtomic:      block.MinerPayouts[0].Value.ExactString(),
 		Stratum: MiningStratumTemplate{
 			Block:        encodedBlock,
 			MerkleBranch: merkleBranch,
@@ -211,10 +241,27 @@ func (s *Service) buildMiningTemplate() (cachedMiningTemplate, error) {
 // MiningTemplate returns a current template or waits for the chain, mempool or
 // template age to change when longPollID names the current template.
 func (s *Service) MiningTemplate(ctx context.Context, longPollID string) (MiningTemplateResponse, error) {
+	return s.MiningTemplateForWork(ctx, longPollID, nil)
+}
+
+// MiningTemplateForWork returns a normal long-polled template when workNonce
+// is nil. A non-nil nonce builds an uncached candidate immediately; this gives
+// a pool a distinct commitment for each worker while preserving the exact
+// payout and mempool selected by the node.
+func (s *Service) MiningTemplateForWork(ctx context.Context, longPollID string, workNonce *uint64) (MiningTemplateResponse, error) {
+	if workNonce != nil {
+		if longPollID != "" {
+			return MiningTemplateResponse{}, errors.New("worknonce cannot be combined with longpollid")
+		} else if *workNonce == 0 {
+			return MiningTemplateResponse{}, errors.New("worknonce must be nonzero")
+		}
+		template, err := s.buildMiningTemplate(workNonce)
+		return template.response, err
+	}
 	for {
 		s.miningMu.Lock()
 		if s.miningTemplate == nil || time.Since(s.miningTemplate.created) >= miningTemplateMaxAge {
-			template, err := s.buildMiningTemplate()
+			template, err := s.buildMiningTemplate(nil)
 			if err != nil {
 				s.miningMu.Unlock()
 				return MiningTemplateResponse{}, err
@@ -248,6 +295,26 @@ func (s *Service) MiningTemplate(ctx context.Context, longPollID string) (Mining
 			s.invalidateMiningTemplate()
 		}
 	}
+}
+
+// MiningStatus returns selected-chain and maturity information for a block.
+func (s *Service) MiningStatus(id types.BlockID) MiningBlockStatus {
+	tip := s.CM.Tip()
+	status := MiningBlockStatus{Block: id, TipHeight: tip.Height}
+	state, known := s.CM.State(id)
+	if !known {
+		return status
+	}
+	status.Known = true
+	status.Height = state.Index.Height
+	status.MaturityHeight = state.Index.Height + state.Network.MaturityDelay
+	if best, ok := s.CM.BestIndex(state.Index.Height); ok && best.ID == id {
+		status.Canonical = true
+		if tip.Height >= state.Index.Height {
+			status.Confirmations = tip.Height - state.Index.Height + 1
+		}
+	}
+	return status
 }
 
 // SubmitMiningBlock validates and relays a Sia-encoded QDAY v2 block.

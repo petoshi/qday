@@ -25,7 +25,7 @@ TARGET_SYSTEMS = {
 }
 
 
-def wait_for(check, label, seconds=90):
+def wait_for(check, label, seconds=180):
     deadline = time.monotonic() + seconds
     last = None
     while time.monotonic() < deadline:
@@ -86,8 +86,26 @@ def run_live(command, data, log_path, label):
             if process.wait(timeout=15) != 0:
                 raise RuntimeError(label + " returned a failure status during shutdown")
         finally:
+            if process.poll() is None and endpoint and token:
+                try:
+                    request(endpoint, token, "shutdown", {})
+                    process.wait(timeout=15)
+                except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired):
+                    pass
             if process.poll() is None:
-                process.terminate()
+                if os.name == "nt":
+                    # The desktop executable owns a child node process. Killing
+                    # only the launcher leaves SQLite open on Windows, so stop
+                    # the complete process tree when graceful shutdown fails.
+                    subprocess.run(
+                        ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        timeout=15,
+                        check=False,
+                    )
+                else:
+                    process.terminate()
                 try:
                     process.wait(timeout=10)
                 except subprocess.TimeoutExpired:

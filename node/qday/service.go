@@ -67,6 +67,9 @@ type Service struct {
 	rebroadcasts      map[types.TransactionID]pendingBroadcast
 	rebroadcastWake   chan struct{}
 	rebroadcastDone   chan struct{}
+	poolPayoutPath    string
+	poolPayoutMu      sync.Mutex
+	poolPayouts       map[string]poolPayoutRecord
 }
 
 type SupplyAmount struct {
@@ -105,6 +108,8 @@ func NewService(ctx context.Context, dir string, cm *chain.Manager, wm *wallet.M
 		rebroadcasts:      make(map[types.TransactionID]pendingBroadcast),
 		rebroadcastWake:   make(chan struct{}, 1),
 		rebroadcastDone:   make(chan struct{}),
+		poolPayoutPath:    filepath.Join(dir, "pool-payouts.json"),
+		poolPayouts:       make(map[string]poolPayoutRecord),
 	}
 	s.stopMiningWatch = cm.OnPoolChange(s.invalidateMiningTemplate)
 	if k, err := readKey(s.path); err == nil {
@@ -120,6 +125,11 @@ func NewService(ctx context.Context, dir string, cm *chain.Manager, wm *wallet.M
 		return nil, err
 	}
 	if err := s.loadPendingBroadcasts(); err != nil {
+		s.stopMiningWatch()
+		cancel()
+		return nil, err
+	}
+	if err := s.loadPoolPayouts(); err != nil {
 		s.stopMiningWatch()
 		cancel()
 		return nil, err

@@ -22,6 +22,7 @@ This guide calls `h + 6` the **QDAY block**.
 | Sia contracts and siafunds | No | QDAY consensus rejects them |
 | Sia `getblocktemplate` client | Partly | Use QDAY's authenticated local endpoints and v2 templates |
 | Sia Stratum miner | Yes, through a bridge | Run [`qday-stratum`](https://github.com/petoshi/qday-stratum) beside an unlocked QDAY node |
+| Public PPLNS pool | Yes | [`qday-pool`](https://github.com/petoshi/qday-pool) provides SiaMining Stratum, VarDiff, exact work accounting and automatic payouts |
 | Sia explorer assumptions | No | Track the QDAY block, changing values, shields and decay |
 | Sia JSON APIs | No | The shipped API is local and controls one wallet |
 | Exchange custody daemon | No | Run [`qday-walletd`](https://github.com/petoshi/qday-walletd) or implement the same QDAY key and accounting rules |
@@ -60,11 +61,17 @@ Content-Type: application/json
 The response follows Sia `minerd`'s version 2 template shape and includes an
 additional `header` field containing the complete 80-byte work header as hex.
 It already contains the mandatory QDAY miner marker, all selected mempool
-transactions, their fees, the payout and the commitment. Repeating the request
-with its `longpollid` returns when the chain or mempool changes, or after 30
-seconds. The `stratum.block` and `stratum.merklebranch` fields let a controller
-produce a SiaMining-compatible job without rebuilding QDAY state. A pool must
-distribute fresh work when that request returns.
+transactions, their fees, the payout and the commitment. Exact
+`blockRewardAtomic`, `feesAtomic` and `payoutAtomic` strings let accounting
+avoid floating point. Repeating the request with its `longpollid` returns when
+the chain or mempool changes, or after 30 seconds.
+
+QDAY v0.8.1 adds an optional `worknonce`. Send
+`{"worknonce":<unique uint64>}` without `longpollid` to build an uncached
+candidate with a distinct marker and commitment for one miner. The
+`stratum.block` and `stratum.merklebranch` fields let a controller produce a
+SiaMining-compatible job without rebuilding QDAY state. A pool must distribute
+fresh work when the long-poll request returns.
 
 After finding a valid nonce, reconstruct the complete v2 block and submit its
 Sia binary encoding as hexadecimal:
@@ -83,6 +90,15 @@ not embed a Stratum listener. The separate
 [`qday-stratum`](https://github.com/petoshi/qday-stratum) solo bridge translates
 these endpoints to the SiaMining dialect. Pool controllers may use the same API
 and implement their own share difficulty, worker accounting and payouts.
+
+The reference public pool is
+[`qday-pool`](https://github.com/petoshi/qday-pool). It requires QDAY v0.8.1 or
+newer and uses `POST /api/miner/blockstatus` to follow found blocks through
+reorganizations and maturity. Its payout controller calls
+`POST /api/pool/payout` with canonical atomic integers and a persistent request
+ID. The node persists the signed transaction before relay, so retrying after a
+timeout or restart cannot create a second payment. The hosted pool reserves 1%
+of each complete block payout; that percentage is pool policy, not consensus.
 
 Pool software that constructs candidates without the API must perform the same
 steps. A Sia coinbase transaction is not valid on QDAY:

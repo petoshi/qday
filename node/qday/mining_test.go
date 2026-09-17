@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"go.sia.tech/core/blake2b"
+	"go.sia.tech/core/consensus"
 	"go.sia.tech/core/types"
 	"go.sia.tech/coreutils/chain"
 	mining "go.sia.tech/coreutils/qday"
@@ -184,6 +185,25 @@ func TestMiningTemplateTracksPoolAndSubmits(t *testing.T) {
 		t.Fatalf("invalid initial mining template: %+v", initial)
 	}
 	verifyStratumTemplate(t, initial)
+	workNonce := uint64(0x51444159)
+	custom, err := s.MiningTemplateForWork(context.Background(), "", &workNonce)
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker, err := consensus.ParseQdayEnvelope(decodeTemplateBlock(t, custom).V2.Transactions[0].ArbitraryData)
+	if err != nil || marker.Nonce != workNonce || custom.WorkNonce != workNonce {
+		t.Fatalf("custom work nonce was not committed: %+v %v", custom, err)
+	} else if custom.Commitment == initial.Commitment {
+		t.Fatal("custom work nonce did not produce independent work")
+	}
+	verifyStratumTemplate(t, custom)
+	zeroWorkNonce := uint64(0)
+	if _, err := s.MiningTemplateForWork(context.Background(), "", &zeroWorkNonce); err == nil {
+		t.Fatal("zero work nonce was accepted")
+	}
+	if _, err := s.MiningTemplateForWork(context.Background(), initial.LongPollID, &workNonce); err == nil {
+		t.Fatal("work nonce and long poll ID were accepted together")
+	}
 
 	next := make(chan MiningTemplateResponse, 1)
 	failure := make(chan error, 1)
@@ -243,6 +263,10 @@ func TestMiningTemplateTracksPoolAndSubmits(t *testing.T) {
 	}
 	if s.CM.Tip().ID != block.ID() || len(s.CM.V2PoolTransactions()) != 0 {
 		t.Fatal("submitted block did not confirm the mempool transaction")
+	}
+	status := s.MiningStatus(block.ID())
+	if !status.Known || !status.Canonical || status.Height != s.CM.Tip().Height || status.MaturityHeight != status.Height+s.CM.TipState().Network.MaturityDelay {
+		t.Fatalf("wrong submitted block status: %+v", status)
 	}
 	if got := block.MinerPayouts[0].Value; got != s.CM.TipState().BlockReward().Add(types.HastingsPerSiacoin.Div64(1000)) {
 		t.Fatal("template did not pay the transaction fee to the miner")
