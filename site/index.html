@@ -18,8 +18,8 @@
   <link rel="canonical" href="https://pqday.com/">
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
   <link rel="preload" href="assets/hero.webp" as="image" type="image/webp">
-  <link rel="stylesheet" href="styles.css?v=4">
-  <script src="app.js" defer></script>
+  <link rel="stylesheet" href="styles.css?v=5">
+  <script src="app.js?v=5" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main">Skip to the wreckage</a>
@@ -238,6 +238,16 @@
       <a href="https://x.com/search?q=%24QDAY&amp;src=cashtag_click" target="_blank" rel="noopener noreferrer">$QDAY</a>
     </div>
   </footer>
+
+  <div class="upgrade-notice" id="upgrade-notice" role="dialog" aria-modal="true" aria-labelledby="upgrade-notice-title" hidden>
+    <section class="upgrade-notice-card">
+      <button class="upgrade-notice-close" type="button" aria-label="Dismiss upgrade notice" data-dismiss-upgrade>×</button>
+      <span class="upgrade-notice-kicker">MANDATORY MAINNET UPGRADE</span>
+      <h2 id="upgrade-notice-title">PLEASE UPGRADE TO v1.0.0.</h2>
+      <p>QDAY v1 is mandatory from block 9,100. Update wallets, nodes and mining software.</p>
+      <a href="https://bitcointalk.org/index.php?topic=5594351.msg67153388#msg67153388" target="_blank" rel="noopener noreferrer">READ THE UPGRADE NOTICE <span aria-hidden="true">↗</span></a>
+    </section>
+  </div>
 
   <dialog class="download-dialog" id="downloadDialog" aria-labelledby="downloadTitle">
     <div class="dialog-shell">

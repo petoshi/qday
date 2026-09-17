@@ -54,6 +54,92 @@ body.modal-open {
   overflow: hidden;
 }
 
+body.upgrade-notice-open {
+  overflow: hidden;
+}
+
+.upgrade-notice {
+  position: fixed;
+  z-index: 1200;
+  inset: 0;
+  display: grid;
+  padding: 1.25rem;
+  place-items: center;
+  background: rgba(5, 4, 7, 0.84);
+  backdrop-filter: blur(12px);
+}
+
+.upgrade-notice[hidden] {
+  display: none;
+}
+
+.upgrade-notice-card {
+  position: relative;
+  width: min(600px, 100%);
+  padding: clamp(2rem, 6vw, 4.25rem);
+  border: 1px solid rgba(231, 193, 120, 0.42);
+  background: linear-gradient(145deg, #1a171d, #0e0d11 72%);
+  box-shadow: 0 2.5rem 7rem rgba(0, 0, 0, 0.65), inset 4px 0 0 var(--gold);
+}
+
+.upgrade-notice-close {
+  position: absolute;
+  top: 0.9rem;
+  right: 0.9rem;
+  width: 2.75rem;
+  height: 2.75rem;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  font-size: 1.6rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.upgrade-notice-close:hover {
+  border-color: var(--gold);
+  color: var(--bone);
+}
+
+.upgrade-notice-kicker {
+  color: var(--gold);
+  font-size: 0.65rem;
+  font-weight: 800;
+  letter-spacing: 0.18em;
+}
+
+.upgrade-notice-card h2 {
+  max-width: 500px;
+  margin: 1rem 0;
+  font: 800 clamp(3.2rem, 10vw, 5.4rem)/0.88 var(--display);
+  letter-spacing: -0.02em;
+}
+
+.upgrade-notice-card p {
+  max-width: 470px;
+  margin: 0 0 1.75rem;
+  color: var(--muted);
+}
+
+.upgrade-notice-card a {
+  display: inline-flex;
+  min-height: 3.25rem;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  padding: 0.75rem 1.15rem;
+  border: 1px solid var(--gold);
+  background: var(--gold);
+  color: var(--black);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+
+.upgrade-notice-card a:hover {
+  background: var(--bone);
+}
+
 button,
 a {
   font: inherit;

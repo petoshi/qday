@@ -1,7 +1,35 @@
 const dialog = document.querySelector("#downloadDialog");
 const openers = document.querySelectorAll("[data-open-download]");
 const closer = document.querySelector("[data-close-download]");
+const upgradeNotice = document.querySelector("#upgrade-notice");
+const upgradeDismiss = document.querySelector("[data-dismiss-upgrade]");
+const upgradeStorageKey = "qday:v1.0.0-upgrade-dismissed";
 let lastOpener = null;
+
+function upgradeDismissed() {
+  try {
+    return localStorage.getItem(upgradeStorageKey) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function dismissUpgradeNotice() {
+  try {
+    localStorage.setItem(upgradeStorageKey, "1");
+  } catch {
+    // The notice still closes when storage is unavailable.
+  }
+  upgradeNotice.hidden = true;
+  document.body.classList.remove("upgrade-notice-open");
+}
+
+upgradeDismiss.addEventListener("click", dismissUpgradeNotice);
+if (!upgradeDismissed()) {
+  upgradeNotice.hidden = false;
+  document.body.classList.add("upgrade-notice-open");
+  requestAnimationFrame(() => upgradeDismiss.focus({preventScroll: true}));
+}
 
 function showDownloads(opener = null) {
   lastOpener = opener;
