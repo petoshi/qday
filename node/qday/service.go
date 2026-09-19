@@ -92,6 +92,40 @@ type SupplyStatus struct {
 	UnspentOutputs      uint64       `json:"unspentOutputs"`
 }
 
+const observedHashrateWindow = 60
+
+func (s *Service) observedNetworkHashrate(tip types.ChainIndex, state consensus.State, window uint64) (float64, uint64) {
+	if tip.Height == 0 || window == 0 {
+		return 0, 0
+	}
+	window = min(window, tip.Height)
+	startIndex, ok := s.CM.BestIndex(tip.Height - window)
+	if !ok {
+		return 0, 0
+	}
+	startState, ok := s.CM.State(startIndex.ID)
+	if !ok {
+		return 0, 0
+	}
+	startBlock, ok := s.CM.Block(startIndex.ID)
+	if !ok {
+		return 0, 0
+	}
+	endBlock, ok := s.CM.Block(tip.ID)
+	if !ok {
+		return 0, 0
+	}
+	seconds := endBlock.Timestamp.Unix() - startBlock.Timestamp.Unix()
+	endWork, endOK := new(big.Int).SetString(state.TotalWork.String(), 10)
+	startWork, startOK := new(big.Int).SetString(startState.TotalWork.String(), 10)
+	if !endOK || !startOK || seconds < 1 || endWork.Cmp(startWork) <= 0 {
+		return 0, 0
+	}
+	work := endWork.Sub(endWork, startWork)
+	hashrate, _ := new(big.Float).Quo(new(big.Float).SetInt(work), new(big.Float).SetInt64(seconds)).Float64()
+	return hashrate, window
+}
+
 func NewService(ctx context.Context, dir string, cm *chain.Manager, wm *wallet.Manager, sy *syncer.Syncer, manifest chain.QdayManifest) (*Service, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	s := &Service{
@@ -886,6 +920,7 @@ func (s *Service) Status() (map[string]any, error) {
 	r["difficulty"] = cs.Difficulty.String()
 	r["initialDifficulty"] = cs.Network.GenesisState().Difficulty.String()
 	r["powTarget"] = cs.PoWTarget().String()
+	r["observedHashrate"], r["hashrateWindowBlocks"] = s.observedNetworkHashrate(cs.Index, cs, observedHashrateWindow)
 	r["difficultyAlgorithm"] = "Sia Oak / Final Cut"
 	r["maturityBlocks"] = cs.Network.MaturityDelay
 	networkSynced := s.networkSynced()

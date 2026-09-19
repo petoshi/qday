@@ -126,3 +126,25 @@ func TestStatusReportsProtocolActivation(t *testing.T) {
 		t.Fatalf("wrong active protocol status: %+v", status)
 	}
 }
+
+func TestStatusReportsObservedNetworkHashrate(t *testing.T) {
+	s := newTestService(t)
+	if _, err := s.Create(context.Background(), "hashrate-status-password", seedwallet.QdaySeedPhrase([32]byte{0x51, 0x44, 0x41, 0x59})); err != nil {
+		t.Fatal(err)
+	}
+	synced(t, s)
+	for range 3 {
+		mineForTest(t, s)
+	}
+	status, err := s.Status()
+	if err != nil {
+		t.Fatal(err)
+	}
+	hashrate, ok := status["observedHashrate"].(float64)
+	if !ok || hashrate <= 0 {
+		t.Fatalf("invalid observed hashrate: %#v", status["observedHashrate"])
+	}
+	if window, ok := status["hashrateWindowBlocks"].(uint64); !ok || window != 3 {
+		t.Fatalf("invalid hashrate window: %#v", status["hashrateWindowBlocks"])
+	}
+}

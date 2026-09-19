@@ -137,6 +137,8 @@ Returns node, chain, wallet, mining and network state.
 | `difficulty` | string | average hashes expected for the next block |
 | `initialDifficulty` | string | average hashes expected at genesis |
 | `powTarget` | string | target for the next block |
+| `observedHashrate` | number | chain work completed per second across the latest 60 consecutive blocks |
+| `hashrateWindowBlocks` | integer | number of consecutive blocks used by `observedHashrate`; smaller only before height 60 |
 | `difficultyAlgorithm` | string | `Sia Oak / Final Cut` |
 | `maturityBlocks` | integer | miner reward maturity |
 | `shieldUntil` | integer | earliest shield end among spendable wallet outputs; omitted when unavailable |
