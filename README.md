@@ -156,16 +156,18 @@ premine is left.
 | TERA, TH/s | 36,450 QDAY |
 | PETA, PH/s | 32,805 QDAY next |
 
-**171,950 QDAY is permanently dead.** The premine address now holds exactly
-**328,049.998 QDAY**: 328,050 after the burns, minus the two 0.001 QDAY
-transaction fees that put them on-chain.
+**179,759 QDAY is permanently dead.** The scheduled SI-prefix burns destroyed
+171,950 QDAY. Two additional burns of 7,000 and 809 QDAY leave exactly
+**320,241 QDAY** from the original premine. The live address balance can be
+lower after transparent transfers and transaction fees; the explorer reports
+both figures separately.
 
-[View the latest burn transaction](https://explorer.pqday.com/transaction/583d8e57be36a8ad694e401a51775339dba40002d68334ee3139830be8824089).
+[View the latest burn transaction](https://explorer.pqday.com/transaction/f7dea92c5a66c31ab85f87af7c21794eef06335c5906aa1f71174c370dd26731).
 Make the number bigger. Make my premine smaller.
 
 The genesis allocation was about **5.88%** of the maximum 8,500,000 QDAY issued
-by genesis and the first 1,000,000 block rewards. The remaining address balance
-is about **3.86%** of that maximum. There was no presale and no VC allocation
+by genesis and the first 1,000,000 block rewards. The remaining premine is about
+**3.77%** of that maximum. There was no presale and no VC allocation
 hidden behind a prettier word.
 
 The issuance cap remains 8,500,000 QDAY. Confirmed burns reduce current supply,
