@@ -284,7 +284,7 @@ h3 {
   .hero-actions-main {
     width: min(1120px, calc(100vw - 8vw));
     display: grid;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    grid-template-columns: repeat(6, minmax(0, 1fr));
   }
 
   .hero-actions-main .button {
@@ -1505,7 +1505,7 @@ footer div a:hover {
   }
 
   .hero h1 {
-    font-size: clamp(4.2rem, 22vw, 7rem);
+    font-size: clamp(3.5rem, 18.3vw, 7rem);
   }
 
   .hero-copy {
