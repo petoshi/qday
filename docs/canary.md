@@ -121,6 +121,12 @@ This is an encoding equivalence, not a bridge, wrapper, hash or second key.
 Because `C` is a canonical point in the prime-order Edwards25519 subgroup, the
 same scalar `x` satisfying `x·G = C` is the signing scalar for that public key.
 
+The standard-library verification test in
+[`core/cmd/qday-canary/solana_test.go`](../core/cmd/qday-canary/solana_test.go)
+constructs an Ed25519 signature directly from a canonical test scalar and
+verifies it against `x·G` with Go's standard `crypto/ed25519` verifier. It
+demonstrates the signing consequence without knowing the mainnet canary scalar.
+
 ## Reproduce it
 
 From the repository root:
