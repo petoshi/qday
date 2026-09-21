@@ -10,6 +10,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"math/big"
 	"os"
 
 	"filippo.io/edwards25519"
@@ -17,8 +18,9 @@ import (
 )
 
 const (
-	domain     = "QDAY/Edwards25519/NUMS/canary/v1/"
-	maxCounter = 1 << 20
+	domain         = "QDAY/Edwards25519/NUMS/canary/v1/"
+	maxCounter     = 1 << 20
+	base58Alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 )
 
 type attempt struct {
@@ -43,8 +45,38 @@ type transcript struct {
 	Attempts          []attempt `json:"attempts"`
 	SelectedCounter   uint64    `json:"selectedCounter"`
 	DerivedChallenge  string    `json:"derivedChallenge"`
+	SolanaAddress     string    `json:"solanaAddress"`
 	ManifestChallenge string    `json:"manifestChallenge"`
 	Match             bool      `json:"match"`
+}
+
+// base58Encode encodes raw bytes using the unchecksummed Bitcoin alphabet used
+// for Solana public keys. No hash, checksum, or key derivation is applied.
+func base58Encode(src []byte) string {
+	if len(src) == 0 {
+		return ""
+	}
+
+	leadingZeroes := 0
+	for leadingZeroes < len(src) && src[leadingZeroes] == 0 {
+		leadingZeroes++
+	}
+
+	value := new(big.Int).SetBytes(src)
+	base := big.NewInt(58)
+	remainder := new(big.Int)
+	encoded := make([]byte, 0, len(src)*138/100+1)
+	for value.Sign() > 0 {
+		value.DivMod(value, base, remainder)
+		encoded = append(encoded, base58Alphabet[remainder.Int64()])
+	}
+	for i := 0; i < leadingZeroes; i++ {
+		encoded = append(encoded, base58Alphabet[0])
+	}
+	for left, right := 0, len(encoded)-1; left < right; left, right = left+1, right-1 {
+		encoded[left], encoded[right] = encoded[right], encoded[left]
+	}
+	return string(encoded)
 }
 
 func derive() (transcript, error) {
@@ -89,6 +121,7 @@ func derive() (transcript, error) {
 		result.Attempts = append(result.Attempts, entry)
 		result.SelectedCounter = counter
 		result.DerivedChallenge = entry.SubgroupPoint
+		result.SolanaAddress = base58Encode(point.Bytes())
 		return result, nil
 	}
 	return transcript{}, errors.New("no canary point found within the counter limit")
@@ -137,6 +170,7 @@ func printText(result transcript) {
 	}
 	fmt.Println("derived challenge:", result.DerivedChallenge)
 	fmt.Println("manifest challenge:", result.ManifestChallenge)
+	fmt.Println("Solana address:", result.SolanaAddress)
 	fmt.Println("match:", result.Match)
 }
 

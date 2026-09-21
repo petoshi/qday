@@ -69,6 +69,58 @@ After cofactor clearing, counter `1` produces:
 That value exactly matches `network.qday.canary` in
 [`qday-mainnet.json`](../qday-mainnet.json).
 
+## The same point as a Solana address
+
+The QDAY manifest stores `C` as 32 compressed Edwards25519 bytes and this
+document prints those bytes as hexadecimal. A Solana public key is also 32
+bytes, displayed with unchecksummed Base58 encoding.
+
+Decode the QDAY hexadecimal string to bytes and Base58-encode those exact
+bytes. Do not hash them and do not perform another key derivation:
+
+```text
+QDAY hexadecimal
+7343aaaab7bb999347740b9e1932f5487046f56b1566ab23cac0b129adefb771
+
+hex decode -> the same 32 bytes -> Base58 encode
+
+Solana public key
+8kwjLg5bY5i3XMAab6oUgnX82nPCedE3EgDSFkHWcCkY
+```
+
+The `qday-canary` verifier performs this encoding and prints the Solana public
+key. Its Base58 implementation is in
+[`core/cmd/qday-canary/main.go`](../core/cmd/qday-canary/main.go), next to the
+independent point derivation.
+
+The conversion can also be reproduced with only Python's standard library:
+
+```sh
+python3 - <<'PY'
+point_hex = "7343aaaab7bb999347740b9e1932f5487046f56b1566ab23cac0b129adefb771"
+alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+raw = bytes.fromhex(point_hex)
+leading_zeroes = len(raw) - len(raw.lstrip(b"\x00"))
+value = int.from_bytes(raw, "big")
+encoded = ""
+while value:
+    value, remainder = divmod(value, 58)
+    encoded = alphabet[remainder] + encoded
+address = "1" * leading_zeroes + encoded
+print(address)
+PY
+```
+
+Expected output:
+
+```text
+8kwjLg5bY5i3XMAab6oUgnX82nPCedE3EgDSFkHWcCkY
+```
+
+This is an encoding equivalence, not a bridge, wrapper, hash or second key.
+Because `C` is a canonical point in the prime-order Edwards25519 subgroup, the
+same scalar `x` satisfying `x·G = C` is the signing scalar for that public key.
+
 ## Reproduce it
 
 From the repository root:
@@ -82,6 +134,7 @@ The final lines must be:
 ```text
 derived challenge: 7343aaaab7bb999347740b9e1932f5487046f56b1566ab23cac0b129adefb771
 manifest challenge: 7343aaaab7bb999347740b9e1932f5487046f56b1566ab23cac0b129adefb771
+Solana address: 8kwjLg5bY5i3XMAab6oUgnX82nPCedE3EgDSFkHWcCkY
 match: true
 ```
 

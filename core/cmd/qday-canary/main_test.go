@@ -20,4 +20,28 @@ func TestMainnetCanaryVector(t *testing.T) {
 	if result.SelectedCounter != 1 || result.DerivedChallenge != challenge {
 		t.Fatalf("unexpected challenge: counter=%d point=%s", result.SelectedCounter, result.DerivedChallenge)
 	}
+	const solanaAddress = "8kwjLg5bY5i3XMAab6oUgnX82nPCedE3EgDSFkHWcCkY"
+	if result.SolanaAddress != solanaAddress {
+		t.Fatalf("unexpected Solana address: %s", result.SolanaAddress)
+	}
+}
+
+func TestBase58Encode(t *testing.T) {
+	tests := []struct {
+		name string
+		in   []byte
+		want string
+	}{
+		{"empty", nil, ""},
+		{"zero", []byte{0}, "1"},
+		{"leading zeroes", []byte{0, 0, 1}, "112"},
+		{"known vector", []byte("Hello World"), "JxF12TrwUP45BMd"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := base58Encode(test.in); got != test.want {
+				t.Fatalf("base58Encode(%x) = %q, want %q", test.in, got, test.want)
+			}
+		})
+	}
 }
